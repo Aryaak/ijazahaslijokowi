@@ -152,6 +152,10 @@ interface Env {
   fadeTimer: number;
   opacity: number;
   row: number;
+  isItemShake: boolean;      // flag shake karena item (tidak akan jadi zonked)
+  itemOpenProgress: number;  // 0..1 animasi buka amplop item (flap terbuka)
+  itemEmoji: string;         // emoji item yang keluar
+  itemRarity: Rarity | null; // rarity untuk warna glow
 }
 
 // ─── Game constants ───────────────────────────────────────────────────────────
@@ -218,20 +222,34 @@ function playItem(ctx: AudioContext, rarity: Rarity) {
 function drawEnvelope(ctx2d: CanvasRenderingContext2D, env: Env, hovered: boolean, shakeX: number) {
   const cx = env.x + shakeX;
   const cy = env.y;
+  const p  = env.itemOpenProgress; // 0..1 animasi item keluar
   const s  = env.scale * (hovered && !env.zonked && !env.opened ? 1.1 : 1);
   const w  = W * s, h = H * s, hw = w/2, hh = h/2;
+
+  const rarityGlowMap: Record<string, string> = {
+    umum:   "rgba(148,163,184,0.7)",
+    langka: "rgba(59,130,246,0.85)",
+    epic:   "rgba(168,85,247,0.9)",
+    legend: "rgba(245,158,11,1.0)",
+  };
+  const itemGlow = env.itemRarity ? rarityGlowMap[env.itemRarity] : "rgba(255,220,80,0.7)";
 
   ctx2d.save();
   ctx2d.translate(cx, cy);
 
-  ctx2d.shadowColor   = env.opened ? "rgba(255,215,0,0.7)" : env.zonked ? "rgba(200,30,30,0.4)" : hovered ? "rgba(200,160,80,0.55)" : "rgba(0,0,0,0.45)";
-  ctx2d.shadowBlur    = env.opened ? 28 : hovered ? 14 : 8;
+  const isItemOpen = p > 0;
+  ctx2d.shadowColor   = env.opened ? "rgba(255,215,0,0.7)"
+                      : env.zonked ? "rgba(200,30,30,0.4)"
+                      : isItemOpen  ? itemGlow
+                      : hovered     ? "rgba(200,160,80,0.55)"
+                      :               "rgba(0,0,0,0.45)";
+  ctx2d.shadowBlur    = env.opened ? 28 : isItemOpen ? 18 + p * 22 : hovered ? 14 : 8;
   ctx2d.shadowOffsetY = hovered ? -4 : 3;
 
   const body    = env.zonked ? "#4e0e0e" : env.opened ? "#7a5200" : "#8B5E2A";
   const bodyDk  = env.zonked ? "#3e0808" : env.opened ? "#6a4600" : "#7a5020";
   const flap    = env.zonked ? "#621212" : env.opened ? "#8a5e00" : "#9a6a2a";
-  const stroke  = env.zonked ? "#9b1c1c" : env.opened ? "#f5d000" : "#6b4515";
+  const stroke  = env.zonked ? "#9b1c1c" : env.opened ? "#f5d000" : isItemOpen ? "#f5c842" : "#6b4515";
   const topFlap = env.zonked ? "#5e1010" : env.opened ? "#9a6020" : "#b07838";
 
   ctx2d.beginPath(); ctx2d.roundRect(-hw, -hh+h*0.16, w, h*0.84, 3*s);
@@ -246,14 +264,19 @@ function drawEnvelope(ctx2d: CanvasRenderingContext2D, env: Env, hovered: boolea
   }
 
   ctx2d.beginPath();
-  if (!env.zonked && !env.opened) {
-    ctx2d.moveTo(-hw,-hh+h*0.16); ctx2d.lineTo(0,-hh+h*0.58); ctx2d.lineTo(hw,-hh+h*0.16);
-  } else {
+  if (env.zonked || env.opened) {
     ctx2d.moveTo(-hw,-hh+h*0.16); ctx2d.lineTo(0,-hh-h*0.08); ctx2d.lineTo(hw,-hh+h*0.16);
+  } else if (p > 0) {
+    // Flap terbuka bertahap: lerp dari tutup ke buka
+    const flapTip = (-hh + h * 0.58) * (1 - p) + (-hh - h * 0.08) * p;
+    ctx2d.moveTo(-hw,-hh+h*0.16); ctx2d.lineTo(0, flapTip); ctx2d.lineTo(hw,-hh+h*0.16);
+  } else {
+    ctx2d.moveTo(-hw,-hh+h*0.16); ctx2d.lineTo(0,-hh+h*0.58); ctx2d.lineTo(hw,-hh+h*0.16);
   }
   ctx2d.closePath(); ctx2d.fillStyle = topFlap; ctx2d.strokeStyle = stroke; ctx2d.lineWidth = s*1.2; ctx2d.fill(); ctx2d.stroke();
 
-  if (!env.zonked && !env.opened) {
+  // Seal — hanya tampil jika amplop masih tertutup & bukan sedang buka item
+  if (!env.zonked && !env.opened && p === 0) {
     const sr = 9*s, sy = -hh+h*0.62;
     ctx2d.beginPath(); ctx2d.arc(0,sy,sr,0,Math.PI*2);
     ctx2d.fillStyle = "#c0392b"; ctx2d.fill();
@@ -263,6 +286,7 @@ function drawEnvelope(ctx2d: CanvasRenderingContext2D, env: Env, hovered: boolea
     ctx2d.fillText("✦", 0, sy + s*0.5);
   }
 
+  // Zonk label
   if (env.zonked) {
     ctx2d.fillStyle="#ef4444"; ctx2d.font=`900 ${16*s}px Georgia,serif`; ctx2d.textAlign="center"; ctx2d.textBaseline="middle";
     ctx2d.fillText("ZONK!", 0, -hh+h*0.5);
@@ -270,6 +294,36 @@ function drawEnvelope(ctx2d: CanvasRenderingContext2D, env: Env, hovered: boolea
     ctx2d.fillText("✕", 0, -hh+h*0.72);
   }
 
+  // ── Item open: emoji melambung keluar dari amplop ──
+  if (p > 0 && env.itemEmoji && !env.opened) {
+    const emojiY     = (-hh - h * 0.1) - p * h * 1.3;
+    const emojiScale = 0.5 + p * 0.9;
+    const emojiAlpha = p < 0.18 ? p / 0.18 : p > 0.72 ? (1 - p) / 0.28 : 1;
+    const fontSize   = 22 * s * emojiScale;
+
+    // Rarity glow ring
+    if (p > 0.12) {
+      ctx2d.save();
+      ctx2d.globalAlpha = emojiAlpha * 0.55;
+      ctx2d.shadowColor = itemGlow;
+      ctx2d.shadowBlur  = 26 * p;
+      ctx2d.beginPath();
+      ctx2d.arc(0, emojiY, fontSize * 0.62, 0, Math.PI * 2);
+      ctx2d.fillStyle = "rgba(255,255,255,0.07)";
+      ctx2d.fill();
+      ctx2d.restore();
+    }
+
+    ctx2d.save();
+    ctx2d.globalAlpha = emojiAlpha;
+    ctx2d.font = `${Math.max(8, fontSize)}px serif`;
+    ctx2d.textAlign = "center";
+    ctx2d.textBaseline = "middle";
+    ctx2d.fillText(env.itemEmoji, 0, emojiY);
+    ctx2d.restore();
+  }
+
+  // Opened state (ijazah asli)
   if (env.opened) {
     const dw=w*0.45, dh=h*0.42;
     ctx2d.fillStyle="#fdf3dc"; ctx2d.strokeStyle="#c8a050"; ctx2d.lineWidth=s;
@@ -307,7 +361,7 @@ const INVESTORS = [
   { name: "lia",               amount: "Rp10.000", rank: 16 },
   { name: "Nyai Blorong",      amount: "Rp10.000", rank: 17 },
   { name: "Meidia",            amount: "Rp10.000", rank: 18 },
-  { name: "fufufafa win",      amount: "Rp15.000", rank: 19 },  // ← baru, 15k
+  { name: "fufufafa win",      amount: "Rp15.000", rank: 19 },
   { name: "insyaAllah berkah", amount: "Rp5.000",  rank: 20 },
   { name: "Kins",              amount: "Rp5.000",  rank: 21 },
   { name: "rifkayy",           amount: "Rp5.000",  rank: 22 },
@@ -325,17 +379,17 @@ const INVESTORS = [
   { name: "imut",              amount: "Rp5.000",  rank: 34 },
   { name: "Nunu",              amount: "Rp5.000",  rank: 35 },
   { name: "🥰",                amount: "Rp5.000",  rank: 36 },
-  { name: "Istri XiaYizhou",   amount: "Rp5.000",  rank: 37 },  // ← baru
-  { name: "ale",               amount: "Rp5.000",  rank: 38 },  // ← baru
-  { name: "Risvan",            amount: "Rp5.000",  rank: 39 },  // ← baru
+  { name: "Istri XiaYizhou",   amount: "Rp5.000",  rank: 37 },
+  { name: "ale",               amount: "Rp5.000",  rank: 38 },
+  { name: "Risvan",            amount: "Rp5.000",  rank: 39 },
   { name: "Pakris",            amount: "Rp2.000",  rank: 40 },
   { name: "ote prndidikan",    amount: "Rp2.000",  rank: 41 },
   { name: "solo",              amount: "Rp1.000",  rank: 42 },
   { name: "Dri",               amount: "Rp1.000",  rank: 43 },
   { name: "bahlul",            amount: "Rp1.000",  rank: 44 },
   { name: "wita",              amount: "Rp1.000",  rank: 45 },
-  { name: "joko",              amount: "Rp1.000",  rank: 46 },  // ← baru
-  { name: "Tadi",              amount: "Rp1.000",  rank: 47 },  // ← baru
+  { name: "joko",              amount: "Rp1.000",  rank: 46 },
+  { name: "Tadi",              amount: "Rp1.000",  rank: 47 },
 ];
 
 // ─── Confetti particle type ───────────────────────────────────────────────────
@@ -429,12 +483,12 @@ export default function Home() {
     return {
       id: idCounterRef.current++,
       x: cw+W+offsetX+Math.random()*60, y: baseY,
-      // ── FASTER: base speed multiplied by ~2x ──
       vx: (0.045+Math.random()*0.045)*cw*0.001,
       wobble: Math.random()*Math.PI*2, wobbleAmp: 2.5+Math.random()*3, wobbleSpeed: 0.0008+Math.random()*0.0006,
       scale: 0.78+Math.random()*0.28,
       isReal: false, itemId: hasItem ? pickRandomItem().id : null,
       zonked:false, opened:false, shakeTimer:0, shakePhase:0, fadeTimer:0, opacity:1, row,
+      isItemShake: false, itemOpenProgress: 0, itemEmoji: "", itemRarity: null,
     };
   }, []);
 
@@ -450,13 +504,13 @@ export default function Home() {
       envs.push({
         id: idCounterRef.current++,
         x: cw*1.05+col*(cw*1.2/totalCols)+(Math.random()-0.5)*12, y: baseY,
-        // ── FASTER: base speed multiplied by ~2x ──
         vx: (0.045+Math.random()*0.045)*cw*0.001,
         wobble: Math.random()*Math.PI*2, wobbleAmp: 2.5+Math.random()*3, wobbleSpeed: 0.0008+Math.random()*0.0006,
         scale: 0.78+Math.random()*0.28,
         isReal: false,
         itemId: hasItem ? pickRandomItem().id : null,
         zonked:false, opened:false, shakeTimer:0, shakePhase:0, fadeTimer:0, opacity:1, row,
+        isItemShake: false, itemOpenProgress: 0, itemEmoji: "", itemRarity: null,
       });
     }
     return envs;
@@ -469,7 +523,6 @@ export default function Home() {
     const {w:cw}=sizeRef.current; const ch=canvas.height;
     const delta=Math.min(ts-lastTRef.current,50); lastTRef.current=ts;
 
-    // ── FIX: clear only, no background fill — background comes from CSS ──
     ctx.clearRect(0,0,cw,ch);
 
     const envs=envsRef.current, isPlaying=gameStateRef.current==="playing";
@@ -486,11 +539,30 @@ export default function Home() {
         }
         if (e.shakeTimer>0) {
           e.shakeTimer-=delta; e.shakePhase+=0.6;
-          if (e.shakeTimer<=0) { e.shakeTimer=0; e.zonked=true; e.fadeTimer=1400; }
+          // Animasi buka amplop: progress 0→1 selama shakeTimer berlangsung
+          if (e.isItemShake) {
+            e.itemOpenProgress = Math.min(1, 1 - e.shakeTimer / 620);
+          }
+          if (e.shakeTimer<=0) {
+            e.shakeTimer=0;
+            if (e.isItemShake) {
+              // item shake selesai → fade out tanpa zonked
+              e.isItemShake = false;
+              e.itemOpenProgress = 1;
+              e.fadeTimer = 900;
+            } else {
+              e.zonked = true;
+              e.fadeTimer = 1400;
+            }
+          }
         }
-        if (e.zonked&&e.fadeTimer>0) {
-          e.fadeTimer-=delta; e.opacity=Math.max(0,e.fadeTimer/1400);
-          if (e.fadeTimer<=0) toRemove.push(i);
+        // Fade out untuk zonked (1400ms) ATAU item open yang sudah selesai (900ms)
+        if (e.fadeTimer > 0 && !e.isItemShake) {
+          const maxFade = e.zonked ? 1400 : 900;
+          e.fadeTimer -= delta;
+          e.opacity = Math.max(0, e.fadeTimer / maxFade);
+          // Saat fade, progress item open tetap di 1 (flap tetap terbuka)
+          if (e.fadeTimer <= 0) toRemove.push(i);
         }
       }
 
@@ -538,8 +610,10 @@ export default function Home() {
     }
 
     if (toRemove.length>0&&isPlaying) {
-      for (let ri=toRemove.length-1;ri>=0;ri--) {
-        const idx=toRemove[ri], dead=envs[idx];
+      // Deduplicate & sort descending untuk splice yang aman
+      const uniqueRemove = [...new Set(toRemove)].sort((a,b)=>b-a);
+      for (const idx of uniqueRemove) {
+        const dead=envs[idx];
         envs.splice(idx,1);
         envs.push(spawnEnv(cw,ch,dead.row,Math.random()*200));
       }
@@ -642,6 +716,11 @@ export default function Home() {
       hit.itemId = null;
       hit.shakeTimer = 620;
       hit.shakePhase = 0;
+      hit.isItemShake = true;       // shake ini bukan zonk
+      hit.itemOpenProgress = 0;     // mulai animasi dari awal
+      hit.itemEmoji = itemDef.emoji; // emoji yang akan keluar
+      hit.itemRarity = itemDef.rarity; // rarity untuk glow
+
       setOpenedCount(c => {
         const next = c + 1;
         setCumulativeStats(prev => {
@@ -678,6 +757,7 @@ export default function Home() {
         foundItemTimerRef.current = setTimeout(()=>setFoundItem(null), 3400);
       });
     } else {
+      // Zonk biasa: isItemShake tetap false
       hit.shakeTimer=620; hit.shakePhase=0;
       setOpenedCount(c => {
         const next = c + 1;
@@ -701,7 +781,6 @@ export default function Home() {
   const totalCollected = Object.keys(inventory).length;
 
   return (
-    // ── FIX: background color on the wrapper div, not canvas ──
     <div style={{width:"100vw",height:"100vh",overflow:"hidden",position:"relative",fontFamily:"'Georgia',serif", background:"#120600"}}>
       <style>{`
         @keyframes flashPulse { 0%{opacity:0;transform:scale(0.3)} 25%{opacity:1;transform:scale(1)} 75%{opacity:1} 100%{opacity:0;transform:scale(2)} }
@@ -745,30 +824,17 @@ export default function Home() {
         }
       `}</style>
 
-      {/* ── Background video overlay — zIndex 3 (above canvas zIndex 2) ── */}
+      {/* ── Background video overlay ── */}
       {(gameState === "playing" || gameState === "win") && (
         <video
-          autoPlay
-          loop
-          muted
-          playsInline
-          style={{
-            position: "fixed",
-            inset: 0,
-            width: "100%",
-            height: "100%",
-            objectFit: "cover",
-            opacity: 0.13,
-            mixBlendMode: "screen",
-            pointerEvents: "none",
-            zIndex: 1,
-          }}
-        >
+          autoPlay loop muted playsInline
+          style={{position:"fixed",inset:0,width:"100%",height:"100%",objectFit:"cover",
+            opacity:0.13,mixBlendMode:"screen",pointerEvents:"none",zIndex:1}}>
           <source src="/video.mp4" type="video/mp4" />
         </video>
       )}
 
-      {/* ── Canvas — zIndex 2, transparent background ── */}
+      {/* ── Canvas ── */}
       <canvas ref={canvasRef} style={{display:"block",position:"fixed",inset:0,zIndex:2}}
         onMouseMove={gameState==="playing"?handleMouseMove:undefined}
         onClick={gameState==="playing"?handleClick:undefined}
@@ -784,25 +850,22 @@ export default function Home() {
       {/* ── Item Found Popup ── */}
       {foundItem && (
         <div className="item-popup" style={{
-          position:"fixed", bottom:90, left:"50%",
-          zIndex:80, pointerEvents:"none",
+          position:"fixed",bottom:90,left:"50%",zIndex:80,pointerEvents:"none",
           animation:"itemPop 3.2s ease-out forwards",
-          background: `linear-gradient(135deg, #1a0a00, #2d1500)`,
+          background:`linear-gradient(135deg, #1a0a00, #2d1500)`,
           border:`2px solid ${RARITY_COLOR[foundItem.rarity]}`,
-          borderRadius:12, padding:"14px 24px",
+          borderRadius:12,padding:"14px 24px",
           boxShadow:`0 0 24px ${RARITY_GLOW[foundItem.rarity]}, 0 8px 32px rgba(0,0,0,0.7)`,
-          minWidth:240, textAlign:"center",
+          minWidth:240,textAlign:"center",
         }}>
           <div style={{fontSize:9,letterSpacing:"2px",textTransform:"uppercase",color:RARITY_COLOR[foundItem.rarity],marginBottom:4}}>
             {lastItemIsNew?"✨ ITEM BARU! ✨":"Item Ditemukan"}
           </div>
           <div style={{fontSize:44,marginBottom:4}}>{foundItem.emoji}</div>
           <div style={{color:"#fdf3dc",fontWeight:800,fontSize:16,marginBottom:2}}>{foundItem.name}</div>
-          <div style={{
-            display:"inline-block",padding:"2px 10px",borderRadius:99,
+          <div style={{display:"inline-block",padding:"2px 10px",borderRadius:99,
             background:RARITY_COLOR[foundItem.rarity],color:"#fff",
-            fontSize:11,fontWeight:700,letterSpacing:"1px",
-          }}>{RARITY_LABEL[foundItem.rarity]}</div>
+            fontSize:11,fontWeight:700,letterSpacing:"1px"}}>{RARITY_LABEL[foundItem.rarity]}</div>
           <div style={{color:"rgba(245,217,160,0.6)",fontSize:12,marginTop:6,fontStyle:"italic"}}>{foundItem.description}</div>
         </div>
       )}
@@ -811,7 +874,7 @@ export default function Home() {
       {(gameState==="playing"||gameState==="win") && (
         <div className="header-container" style={{position:"fixed",top:0,left:0,right:0,zIndex:20,
           background:"linear-gradient(to bottom,rgba(8,2,0,0.95),transparent)",
-          padding:"8px 20px", pointerEvents:"none"}}>
+          padding:"8px 20px",pointerEvents:"none"}}>
 
           <div className="header-title-wrapper" style={{display:"flex",alignItems:"center",gap:6}}>
             <span style={{fontSize:16}}>📂</span>
@@ -820,42 +883,28 @@ export default function Home() {
 
           <div className="header-timer-wrapper" style={{textAlign:"center"}}>
             <div style={{color:"#c8a050",fontSize:9,letterSpacing:"2px",textTransform:"uppercase"}}>Waktu</div>
-            <div style={{
-              color:"#fbbf24",fontSize:22,fontWeight:700,fontVariantNumeric:"tabular-nums",
-              animation:"timerGlow 2s ease-in-out infinite",
-            }}>{formatTime(timeElapsed)}</div>
+            <div style={{color:"#fbbf24",fontSize:22,fontWeight:700,fontVariantNumeric:"tabular-nums",
+              animation:"timerGlow 2s ease-in-out infinite"}}>{formatTime(timeElapsed)}</div>
           </div>
 
           <div className="header-actions-wrapper">
-            <div style={{
-              background:"rgba(74,40,0,0.85)",
-              border:"1px solid rgba(200,160,80,0.5)", borderRadius:6, padding:"5px 10px",
-              display:"flex",alignItems:"center",gap:6,
-            }}>
+            <div style={{background:"rgba(74,40,0,0.85)",border:"1px solid rgba(200,160,80,0.5)",borderRadius:6,
+              padding:"5px 10px",display:"flex",alignItems:"center",gap:6}}>
               <span style={{fontSize:16,lineHeight:1}}>✉️</span>
               <span style={{color:"rgba(245,217,160,0.85)",fontSize:13,fontWeight:700}}>{openedCount}</span>
             </div>
             <button onClick={()=>{ setShowInv(v=>!v); setHasOpenedInv(true); }} style={{
-              position:"relative",
-              background:"rgba(74,40,0,0.85)",
-              border:"1px solid rgba(200,160,80,0.5)", borderRadius:6, padding:"5px 8px",
-              color:"#f5d9a0", cursor:"pointer", fontSize:18, lineHeight:1,
-              display:"flex",alignItems:"center",justifyContent:"center",
-              transition:"filter 0.15s",
-            }}
+              position:"relative",background:"rgba(74,40,0,0.85)",
+              border:"1px solid rgba(200,160,80,0.5)",borderRadius:6,padding:"5px 8px",
+              color:"#f5d9a0",cursor:"pointer",fontSize:18,lineHeight:1,
+              display:"flex",alignItems:"center",justifyContent:"center",transition:"filter 0.15s"}}
               onMouseEnter={e=>e.currentTarget.style.filter="brightness(1.3)"}
-              onMouseLeave={e=>e.currentTarget.style.filter=""}
-            >
+              onMouseLeave={e=>e.currentTarget.style.filter=""}>
               🎒
               {sessionItemCount > 0 && !hasOpenedInv &&(
-                <span style={{
-                  position:"absolute",top:-6,right:-6,
-                  background:"#f59e0b",color:"#1a0800",
-                  borderRadius:99,width:16,height:16,
-                  display:"flex",alignItems:"center",justifyContent:"center",
-                  fontSize:9,fontWeight:900,
-                  animation:"invBadge 2s ease-in-out infinite",
-                }}>{sessionItemCount}</span>
+                <span style={{position:"absolute",top:-6,right:-6,background:"#f59e0b",color:"#1a0800",
+                  borderRadius:99,width:16,height:16,display:"flex",alignItems:"center",justifyContent:"center",
+                  fontSize:9,fontWeight:900,animation:"invBadge 2s ease-in-out infinite"}}>{sessionItemCount}</span>
               )}
             </button>
           </div>
@@ -864,55 +913,37 @@ export default function Home() {
 
       {/* ── Saweria footer + Leaderboard marquee ── */}
       <div style={{position:"fixed",bottom:0,left:0,right:0,zIndex:30}}>
-
-        <div style={{
-          background:"linear-gradient(90deg,#0e0500,#1e0c00,#0e0500)",
-          borderTop:"1px solid rgba(200,160,80,0.2)",
-          height:28, overflow:"hidden", display:"flex", alignItems:"center",
-          position:"relative",
-        }}>
+        <div style={{background:"linear-gradient(90deg,#0e0500,#1e0c00,#0e0500)",
+          borderTop:"1px solid rgba(200,160,80,0.2)",height:28,overflow:"hidden",
+          display:"flex",alignItems:"center",position:"relative"}}>
           <div style={{position:"absolute",left:0,top:0,bottom:0,width:60,background:"linear-gradient(to right,#0e0500,transparent)",zIndex:2,pointerEvents:"none"}}/>
           <div style={{position:"absolute",right:0,top:0,bottom:0,width:60,background:"linear-gradient(to left,#0e0500,transparent)",zIndex:2,pointerEvents:"none"}}/>
-
-          <div style={{
-            display:"flex", alignItems:"center", gap:0,
-            animation:"marqueeScroll 60s linear infinite",
-            whiteSpace:"nowrap", willChange:"transform",
-          }}>
+          <div style={{display:"flex",alignItems:"center",gap:0,
+            animation:"marqueeScroll 60s linear infinite",whiteSpace:"nowrap",willChange:"transform"}}>
             {[...INVESTORS, ...INVESTORS].map((inv, i) => (
-              <span key={i} style={{display:"inline-flex", alignItems:"center", gap:6, paddingRight:40}}>
-                <span style={{
-                  fontSize:11, fontWeight:900,
-                  color: inv.rank===1 ? "#ffd700" : inv.rank===2 ? "#c0c0c0" : inv.rank===3 ? "#cd7f32" : "rgba(200,160,80,0.5)",
-                }}>
-                  {inv.rank===1 ? "🥇" : inv.rank===2 ? "🥈" : inv.rank===3 ? "🥉" : `#${inv.rank}`}
+              <span key={i} style={{display:"inline-flex",alignItems:"center",gap:6,paddingRight:40}}>
+                <span style={{fontSize:11,fontWeight:900,
+                  color:inv.rank===1?"#ffd700":inv.rank===2?"#c0c0c0":inv.rank===3?"#cd7f32":"rgba(200,160,80,0.5)"}}>
+                  {inv.rank===1?"🥇":inv.rank===2?"🥈":inv.rank===3?"🥉":`#${inv.rank}`}
                 </span>
-                <span style={{
-                  color: inv.rank===1 ? "#ffd700" : inv.rank===2 ? "#d0d0d0" : inv.rank===3 ? "#e8a060" : "rgba(245,217,160,0.65)",
-                  fontSize:12, fontWeight: inv.rank<=3 ? 700 : 500,
-                }}>{inv.name}</span>
-                <span style={{
-                  color: inv.rank===1 ? "#fbbf24" : inv.rank===2 ? "#a0a0a0" : inv.rank===3 ? "#c07040" : "rgba(180,130,60,0.6)",
-                  fontSize:11,
-                }}>{inv.amount}</span>
+                <span style={{color:inv.rank===1?"#ffd700":inv.rank===2?"#d0d0d0":inv.rank===3?"#e8a060":"rgba(245,217,160,0.65)",
+                  fontSize:12,fontWeight:inv.rank<=3?700:500}}>{inv.name}</span>
+                <span style={{color:inv.rank===1?"#fbbf24":inv.rank===2?"#a0a0a0":inv.rank===3?"#c07040":"rgba(180,130,60,0.6)",
+                  fontSize:11}}>{inv.amount}</span>
                 <span style={{color:"rgba(200,160,80,0.2)",fontSize:10,paddingLeft:4}}>·</span>
               </span>
             ))}
           </div>
         </div>
 
-        <div className="footer-saweria" style={{
-          height:52,
+        <div className="footer-saweria" style={{height:52,
           background:"linear-gradient(90deg,#1a0800,#2d1000,#1a0800)",
           borderTop:"1px solid rgba(200,160,80,0.12)",
-          display:"flex",alignItems:"center",justifyContent:"center",
-        }}>
+          display:"flex",alignItems:"center",justifyContent:"center"}}>
           <a href="https://saweria.co/aryatim" target="_blank" rel="noopener noreferrer" className="saweria-btn"
             style={{display:"inline-flex",alignItems:"center",gap:8,
-              background:"linear-gradient(135deg,#f97316,#c2410c)",
-              color:"#fff",textDecoration:"none",
-              padding:"10px 32px",borderRadius:"6px",
-              fontSize:16,fontWeight:800,letterSpacing:"0.8px",
+              background:"linear-gradient(135deg,#f97316,#c2410c)",color:"#fff",textDecoration:"none",
+              padding:"10px 32px",borderRadius:"6px",fontSize:16,fontWeight:800,letterSpacing:"0.8px",
               animation:"saweriaGlow 1.6s ease-in-out infinite"}}
             onMouseEnter={e=>{e.currentTarget.style.animationPlayState="paused";e.currentTarget.style.filter="brightness(1.18)";e.currentTarget.style.transform="scale(1.08)";}}
             onMouseLeave={e=>{e.currentTarget.style.animationPlayState="running";e.currentTarget.style.filter="";e.currentTarget.style.transform="";}}
@@ -926,26 +957,23 @@ export default function Home() {
           display:"flex",alignItems:"center",justifyContent:"center"}}
           onClick={e=>{if(e.target===e.currentTarget)setShowInv(false);}}>
           <div className="inv-modal" style={{background:"linear-gradient(160deg,#1a0a00,#2d1400)",
-            border:"2px solid #c8a050",borderRadius:12,
-            padding:"28px 32px",maxWidth:640,width:"92%",maxHeight:"80vh",overflow:"auto",
-            animation:"invSlideIn 0.3s ease-out",
+            border:"2px solid #c8a050",borderRadius:12,padding:"28px 32px",maxWidth:640,width:"92%",
+            maxHeight:"80vh",overflow:"auto",animation:"invSlideIn 0.3s ease-out",
             boxShadow:"0 30px 80px rgba(0,0,0,0.9)"}}>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20}}>
               <div>
                 <h2 style={{color:"#f5d9a0",fontWeight:800,fontSize:22,margin:0}}>🎒 Inventori</h2>
-                <div style={{color:"#c8a050",fontSize:12,marginTop:2}}>
-                  {totalCollected}/{ITEMS.length} item ditemukan
-                </div>
+                <div style={{color:"#c8a050",fontSize:12,marginTop:2}}>{totalCollected}/{ITEMS.length} item ditemukan</div>
               </div>
-              <button onClick={()=>setShowInv(false)} style={{background:"rgba(255,255,255,0.08)",border:"1px solid rgba(200,160,80,0.3)",
-                color:"#f5d9a0",borderRadius:6,padding:"6px 14px",cursor:"pointer",fontSize:14}}>✕ Tutup</button>
+              <button onClick={()=>setShowInv(false)} style={{background:"rgba(255,255,255,0.08)",
+                border:"1px solid rgba(200,160,80,0.3)",color:"#f5d9a0",borderRadius:6,
+                padding:"6px 14px",cursor:"pointer",fontSize:14}}>✕ Tutup</button>
             </div>
 
             {(["legend","epic","langka","umum"] as Rarity[]).map(rarity=>(
               <div key={rarity} style={{marginBottom:20}}>
                 <div style={{color:RARITY_COLOR[rarity],fontSize:11,fontWeight:700,letterSpacing:"2px",
-                  textTransform:"uppercase",marginBottom:10,
-                  display:"flex",alignItems:"center",gap:8}}>
+                  textTransform:"uppercase",marginBottom:10,display:"flex",alignItems:"center",gap:8}}>
                   <div style={{height:1,flex:1,background:RARITY_COLOR[rarity],opacity:0.3}}/>
                   {RARITY_LABEL[rarity]}
                   <div style={{height:1,flex:1,background:RARITY_COLOR[rarity],opacity:0.3}}/>
@@ -956,44 +984,24 @@ export default function Home() {
                     const owned = count>0;
                     return (
                       <div key={item.id} style={{
-                        background: owned
-                          ? `linear-gradient(135deg,rgba(30,15,0,0.9),rgba(50,25,0,0.9))`
-                          : "rgba(10,5,0,0.6)",
-                        border: owned ? `1.5px solid ${RARITY_COLOR[rarity]}` : "1.5px solid rgba(100,60,20,0.3)",
-                        borderRadius:10, padding:"14px 10px", textAlign:"center",
-                        position:"relative",
-                        animation: owned&&rarity==="legend" ? "legendPulse 2s ease-in-out infinite"
-                                 : owned&&rarity==="epic"   ? "epicPulse 2.5s ease-in-out infinite"
-                                 : "none",
-                        transition:"transform 0.15s",
-                      }}
+                        background:owned?`linear-gradient(135deg,rgba(30,15,0,0.9),rgba(50,25,0,0.9))`:"rgba(10,5,0,0.6)",
+                        border:owned?`1.5px solid ${RARITY_COLOR[rarity]}`:"1.5px solid rgba(100,60,20,0.3)",
+                        borderRadius:10,padding:"14px 10px",textAlign:"center",position:"relative",
+                        animation:owned&&rarity==="legend"?"legendPulse 2s ease-in-out infinite":owned&&rarity==="epic"?"epicPulse 2.5s ease-in-out infinite":"none",
+                        transition:"transform 0.15s"}}
                         onMouseEnter={e=>{ if(owned)(e.currentTarget as HTMLDivElement).style.transform="translateY(-3px)"; }}
-                        onMouseLeave={e=>{ (e.currentTarget as HTMLDivElement).style.transform=""; }}
-                      >
-                        <div style={{
-                          fontSize:36, marginBottom:6,
-                          filter: owned ? "none" : "brightness(0)",
-                          opacity: owned ? 1 : 0.35,
-                          transition:"filter 0.3s",
-                        }}>{item.emoji}</div>
-                        <div style={{
-                          color: owned ? "#fdf3dc" : "rgba(150,100,50,0.4)",
-                          fontWeight:700,fontSize:12,marginBottom:4,lineHeight:1.3,
-                        }}>{owned ? item.name : "???"}</div>
-                        <div style={{
-                          display:"inline-block",padding:"2px 8px",borderRadius:99,
-                          background: owned ? RARITY_COLOR[rarity] : "rgba(80,40,0,0.4)",
-                          color: owned ? "#fff" : "rgba(150,100,50,0.5)",
-                          fontSize:9,fontWeight:700,letterSpacing:"1px",
-                          marginBottom: owned&&count>1?4:0,
-                        }}>{RARITY_LABEL[rarity]}</div>
+                        onMouseLeave={e=>{ (e.currentTarget as HTMLDivElement).style.transform=""; }}>
+                        <div style={{fontSize:36,marginBottom:6,filter:owned?"none":"brightness(0)",opacity:owned?1:0.35,transition:"filter 0.3s"}}>{item.emoji}</div>
+                        <div style={{color:owned?"#fdf3dc":"rgba(150,100,50,0.4)",fontWeight:700,fontSize:12,marginBottom:4,lineHeight:1.3}}>{owned?item.name:"???"}</div>
+                        <div style={{display:"inline-block",padding:"2px 8px",borderRadius:99,
+                          background:owned?RARITY_COLOR[rarity]:"rgba(80,40,0,0.4)",
+                          color:owned?"#fff":"rgba(150,100,50,0.5)",
+                          fontSize:9,fontWeight:700,letterSpacing:"1px",marginBottom:owned&&count>1?4:0}}>
+                          {RARITY_LABEL[rarity]}
+                        </div>
                         {owned&&count>1&&(
-                          <div style={{
-                            position:"absolute",top:6,right:8,
-                            background:RARITY_COLOR[rarity],color:"#fff",
-                            borderRadius:99,padding:"1px 6px",
-                            fontSize:10,fontWeight:800,
-                          }}>×{count}</div>
+                          <div style={{position:"absolute",top:6,right:8,background:RARITY_COLOR[rarity],color:"#fff",
+                            borderRadius:99,padding:"1px 6px",fontSize:10,fontWeight:800}}>×{count}</div>
                         )}
                         {owned&&(
                           <div style={{color:"rgba(200,160,80,0.6)",fontSize:10,marginTop:4,fontStyle:"italic",lineHeight:1.4}}>
@@ -1039,15 +1047,9 @@ export default function Home() {
             {(totalCollected>0 || cumulativeStats.totalOpened>0)&&(
               <div className="stats-row" style={{background:"rgba(60,20,0,0.08)",borderRadius:8,padding:"10px 16px",marginBottom:16,
                 display:"flex",gap:16,justifyContent:"center",fontSize:12,color:"#7a4010"}}>
-                {cumulativeStats.totalOpened>0&&(
-                  <span>✉️ <strong>{cumulativeStats.totalOpened.toLocaleString()}</strong> amplop dibuka</span>
-                )}
-                {cumulativeStats.totalTime>0&&(
-                  <span>⏱ <strong>{formatTime(cumulativeStats.totalTime)}</strong> total bermain</span>
-                )}
-                {totalCollected>0&&(
-                  <span>🎒 <strong>{totalCollected}/{ITEMS.length}</strong> item</span>
-                )}
+                {cumulativeStats.totalOpened>0&&(<span>✉️ <strong>{cumulativeStats.totalOpened.toLocaleString()}</strong> amplop dibuka</span>)}
+                {cumulativeStats.totalTime>0&&(<span>⏱ <strong>{formatTime(cumulativeStats.totalTime)}</strong> total bermain</span>)}
+                {totalCollected>0&&(<span>🎒 <strong>{totalCollected}/{ITEMS.length}</strong> item</span>)}
               </div>
             )}
             <div style={{display:"flex",gap:10,justifyContent:"center"}}>
@@ -1056,10 +1058,9 @@ export default function Home() {
                 padding:"15px 44px",fontSize:17,fontWeight:700,borderRadius:"3px",cursor:"pointer",
                 letterSpacing:"2.5px",textTransform:"uppercase",
                 boxShadow:"0 8px 24px rgba(180,100,10,0.55),inset 0 1px 0 rgba(255,255,255,0.2)",
-                transition:"transform 0.15s",}}
+                transition:"transform 0.15s"}}
                 onMouseEnter={e=>e.currentTarget.style.transform="translateY(-3px)"}
-                onMouseLeave={e=>e.currentTarget.style.transform=""}
-              >▶ Mulai</button>
+                onMouseLeave={e=>e.currentTarget.style.transform=""}>▶ Mulai</button>
             </div>
           </div>
         </div>
@@ -1096,8 +1097,9 @@ export default function Home() {
             <button onClick={()=>setShowInv(true)} style={{
               background:"linear-gradient(135deg,#3a1f00,#2d1500)",color:"#f5d9a0",
               border:"1.5px solid #c8a050",padding:"8px 18px",fontSize:13,
-              fontWeight:700,borderRadius:"3px",cursor:"pointer",marginBottom:16,
-            }}>🎒 Lihat Inventori ({totalCollected}/{ITEMS.length})</button>
+              fontWeight:700,borderRadius:"3px",cursor:"pointer",marginBottom:16}}>
+              🎒 Lihat Inventori ({totalCollected}/{ITEMS.length})
+            </button>
             <div style={{marginBottom:14}}>
               <div style={{color:"#7a4010",fontSize:10,letterSpacing:"2px",textTransform:"uppercase",marginBottom:8}}>Ajak Teman Bermain 👇</div>
               <div style={{display:"flex",gap:6,justifyContent:"center",flexWrap:"wrap"}}>
@@ -1112,16 +1114,18 @@ export default function Home() {
                       padding:"7px 12px",borderRadius:"3px",fontSize:12,fontWeight:700,textDecoration:"none",
                       boxShadow:"0 3px 10px rgba(0,0,0,0.25)",transition:"transform 0.15s,filter 0.15s"}}
                     onMouseEnter={e=>{e.currentTarget.style.transform="translateY(-2px)";e.currentTarget.style.filter="brightness(1.15)";}}
-                    onMouseLeave={e=>{e.currentTarget.style.transform="";e.currentTarget.style.filter="";}}
-                  ><span>{s.emoji}</span>{s.label}</a>
+                    onMouseLeave={e=>{e.currentTarget.style.transform="";e.currentTarget.style.filter="";}}>
+                    <span>{s.emoji}</span>{s.label}
+                  </a>
                 ))}
               </div>
             </div>
             <button onClick={startGame} style={{
               background:"linear-gradient(135deg,#d4830a,#b8690a)",color:"#fff9f0",border:"none",
               padding:"12px 36px",fontSize:14,fontWeight:700,borderRadius:"3px",cursor:"pointer",
-              letterSpacing:"2px",textTransform:"uppercase",boxShadow:"0 6px 20px rgba(180,100,10,0.5)",
-            }}>🔄 Main Lagi</button>
+              letterSpacing:"2px",textTransform:"uppercase",boxShadow:"0 6px 20px rgba(180,100,10,0.5)"}}>
+              🔄 Main Lagi
+            </button>
           </div>
         </div>
       )}
