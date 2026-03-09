@@ -621,14 +621,13 @@ export default function Home() {
 
     const canvas = canvasRef.current;
     if (!canvas) return;
-    const ctx = canvas.getContext("2d", { alpha: false })!;
+    const ctx = canvas.getContext("2d")!;
     if (!ctx) return;
     const cw = canvas.width, ch = canvas.height;
     const lowEnd = lowEndRef.current;
 
-    // Clear with background color (alpha:false is faster)
-    ctx.fillStyle = "#120600";
-    ctx.fillRect(0, 0, cw, ch);
+    // Clear canvas instead of using opaque background
+    ctx.clearRect(0, 0, cw, ch);
 
     const envs = envsRef.current;
     const isPlaying = gameStateRef.current === "playing";
@@ -761,7 +760,7 @@ export default function Home() {
       c.height = lh * dpr;
       c.style.width  = lw + "px";
       c.style.height = lh + "px";
-      const ctx = c.getContext("2d", { alpha: false });
+      const ctx = c.getContext("2d");
       if (ctx) ctx.scale(dpr, dpr);
       sizeRef.current = { w: lw, h: lh };
     };
@@ -960,12 +959,12 @@ export default function Home() {
         canvas { touch-action: none; }
       `}</style>
 
-      {/* ── Background video overlay (skip on low-end) ── */}
-      {(gameState === "playing" || gameState === "win") && !lowEndRef.current && (
+      {/* ── Background video overlay ── */}
+      {(gameState === "playing" || gameState === "win") && (
         <video
           autoPlay loop muted playsInline
           style={{position:"fixed",inset:0,width:"100%",height:"100%",objectFit:"cover",
-            opacity:0.10,mixBlendMode:"screen",pointerEvents:"none",zIndex:3}}>
+            opacity:0.10,mixBlendMode:"screen",pointerEvents:"none",zIndex:1}}>
           <source src="/video.mp4" type="video/mp4" />
         </video>
       )}
