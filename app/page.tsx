@@ -91,24 +91,49 @@ function storageKey(uid: string) {
   for (let i = 0; i < uid.length; i++) h = (h * 31 + uid.charCodeAt(i)) >>> 0;
   return "inv_" + h.toString(36);
 }
-function loadInventory(): Record<string, number> {
+function hashData(data: string, secret: string) {
+  let h = 0;
+  const str = data + secret;
+  for (let i = 0; i < str.length; i++) {
+    h = Math.imul(31, h) + str.charCodeAt(i) | 0;
+  }
+  return h.toString(36);
+}
+function loadInventory(): { valid: Record<string, number>; cheated: boolean } {
   try {
     const uid = getOrCreateUID();
     const raw = localStorage.getItem(storageKey(uid));
-    if (!raw) return {};
-    const parsed = JSON.parse(raw);
-    if (typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    if (!raw) return { valid: {}, cheated: false };
+    
+    let parsed;
+    try { parsed = JSON.parse(raw); } catch { return { valid: {}, cheated: true }; }
+    
+    if (typeof parsed !== "object" || Array.isArray(parsed)) return { valid: {}, cheated: true };
+    if (!parsed.sig || !parsed.data) {
+      localStorage.removeItem(storageKey(uid));
+      return { valid: {}, cheated: true };
+    }
+    
+    const dataStr = JSON.stringify(parsed.data);
+    const expectedSig = hashData(dataStr, uid);
+    if (parsed.sig !== expectedSig) {
+      localStorage.removeItem(storageKey(uid));
+      return { valid: {}, cheated: true };
+    }
+    
     const valid: Record<string, number> = {};
     for (const item of ITEMS) {
-      if (typeof parsed[item.id] === "number") valid[item.id] = parsed[item.id];
+      if (typeof parsed.data[item.id] === "number") valid[item.id] = parsed.data[item.id];
     }
-    return valid;
-  } catch { return {}; }
+    return { valid, cheated: false };
+  } catch { return { valid: {}, cheated: false }; }
 }
 function saveInventory(inv: Record<string, number>) {
   try {
     const uid = getOrCreateUID();
-    localStorage.setItem(storageKey(uid), JSON.stringify(inv));
+    const dataStr = JSON.stringify(inv);
+    const sig = hashData(dataStr, uid);
+    localStorage.setItem(storageKey(uid), JSON.stringify({ data: inv, sig }));
   } catch {}
 }
 function statsKey(uid: string) {
@@ -116,23 +141,44 @@ function statsKey(uid: string) {
   for (let i = 0; i < uid.length; i++) h = (h * 17 + uid.charCodeAt(i)) >>> 0;
   return "stats_" + h.toString(36);
 }
-interface GameStats { totalTime: number; totalOpened: number; }
-function loadStats(): GameStats {
+interface GameStats { totalTime: number; totalOpened: number; bonusChance?: number; }
+function loadStats(): { valid: GameStats; cheated: boolean } {
   try {
     const uid = getOrCreateUID();
     const raw = localStorage.getItem(statsKey(uid));
-    if (!raw) return { totalTime: 0, totalOpened: 0 };
-    const p = JSON.parse(raw);
+    if (!raw) return { valid: { totalTime: 0, totalOpened: 0, bonusChance: 0 }, cheated: false };
+    
+    let p;
+    try { p = JSON.parse(raw); } catch { return { valid: { totalTime: 0, totalOpened: 0, bonusChance: 0 }, cheated: true }; }
+    
+    if (!p.sig || !p.data) {
+      localStorage.removeItem(statsKey(uid));
+      return { valid: { totalTime: 0, totalOpened: 0, bonusChance: 0 }, cheated: true };
+    }
+    
+    const dataStr = JSON.stringify(p.data);
+    const expectedSig = hashData(dataStr, uid);
+    if (p.sig !== expectedSig) {
+      localStorage.removeItem(statsKey(uid));
+      return { valid: { totalTime: 0, totalOpened: 0, bonusChance: 0 }, cheated: true };
+    }
+    
     return {
-      totalTime:   typeof p.totalTime   === "number" ? p.totalTime   : 0,
-      totalOpened: typeof p.totalOpened === "number" ? p.totalOpened : 0,
+      valid: {
+        totalTime:   typeof p.data.totalTime   === "number" ? p.data.totalTime   : 0,
+        totalOpened: typeof p.data.totalOpened === "number" ? p.data.totalOpened : 0,
+        bonusChance: typeof p.data.bonusChance === "number" ? p.data.bonusChance : 0,
+      },
+      cheated: false
     };
-  } catch { return { totalTime: 0, totalOpened: 0 }; }
+  } catch { return { valid: { totalTime: 0, totalOpened: 0, bonusChance: 0 }, cheated: false }; }
 }
 function saveStats(s: GameStats) {
   try {
     const uid = getOrCreateUID();
-    localStorage.setItem(statsKey(uid), JSON.stringify(s));
+    const dataStr = JSON.stringify(s);
+    const sig = hashData(dataStr, uid);
+    localStorage.setItem(statsKey(uid), JSON.stringify({ data: s, sig }));
   } catch {}
 }
 
@@ -495,23 +541,45 @@ export default function Home() {
   const [sessionItemCount, setSessionItemCount] = useState(0);
   const [foundItem,   setFoundItem]   = useState<ItemDef|null>(null);
   const [lastItemIsNew, setLastItemIsNew] = useState(false);
-  const [cumulativeStats, setCumulativeStats] = useState<GameStats>({ totalTime: 0, totalOpened: 0 });
+  const [cumulativeStats, setCumulativeStats] = useState<GameStats>({ totalTime: 0, totalOpened: 0, bonusChance: 0 });
+  const [showCheatModal, setShowCheatModal] = useState(false);
 
   useEffect(() => {
-    setInventory(loadInventory());
-    setCumulativeStats(loadStats());
+    const invData = loadInventory();
+    const statsData = loadStats();
+    
+    if (invData.cheated || statsData.cheated) {
+      setInventory({});
+      setCumulativeStats({ totalTime: 0, totalOpened: 0, bonusChance: 0 });
+      saveInventory({});
+      saveStats({ totalTime: 0, totalOpened: 0, bonusChance: 0 });
+      setShowCheatModal(true);
+    } else {
+      setInventory(invData.valid);
+      setCumulativeStats(statsData.valid);
+    }
 
     // Detect device capability after mount
     lowEndRef.current = isLowEndDevice();
     fpsIntervalRef.current = lowEndRef.current ? 1000 / 30 : 1000 / 60;
 
     if (typeof window !== "undefined") {
-      bgmRef.current = new Audio("/music.mp3");
-      bgmRef.current.loop = true;
-      bgmRef.current.volume = 0.3;
-      clickAudioRef.current = new Audio("/click.mp3");
-      itemAudioRef.current  = new Audio("/item.mp3");
+      if (!bgmRef.current) {
+        bgmRef.current = new Audio("/music.mp3");
+        bgmRef.current.loop = true;
+        bgmRef.current.volume = 0.3;
+      }
+      if (!clickAudioRef.current) clickAudioRef.current = new Audio("/click.mp3");
+      if (!itemAudioRef.current) itemAudioRef.current  = new Audio("/item.mp3");
     }
+
+    return () => {
+      if (bgmRef.current) {
+        bgmRef.current.pause();
+        bgmRef.current.src = "";
+        bgmRef.current = null;
+      }
+    };
   }, []);
 
   const getAudio = useCallback(() => {
@@ -778,6 +846,18 @@ export default function Home() {
   useEffect(() => {
     if (gameState === "playing") {
       timerRef.current = setInterval(() => {
+        const invData = loadInventory();
+        const statsData = loadStats();
+        if (invData.cheated || statsData.cheated) {
+          setInventory({});
+          setCumulativeStats({ totalTime: 0, totalOpened: 0, bonusChance: 0 });
+          saveInventory({});
+          saveStats({ totalTime: 0, totalOpened: 0, bonusChance: 0 });
+          setShowCheatModal(true);
+          gameStateRef.current = "idle"; setGameState("idle");
+          return;
+        }
+
         setTimeElapsed(t => {
           const next = t + 1;
           timeElapsedRef.current = next;
@@ -826,6 +906,18 @@ export default function Home() {
 
   // Extracted click core logic (shared by mouse + touch)
   const handleClickCore = useCallback((mx: number, my: number, hit: Env) => {
+    const invData = loadInventory();
+    const statsData = loadStats();
+    if (invData.cheated || statsData.cheated) {
+      setInventory({});
+      setCumulativeStats({ totalTime: 0, totalOpened: 0, bonusChance: 0 });
+      saveInventory({});
+      saveStats({ totalTime: 0, totalOpened: 0, bonusChance: 0 });
+      setShowCheatModal(true);
+      gameStateRef.current = "idle"; setGameState("idle");
+      return;
+    }
+
     const audio = getAudio();
 
     if (clickAudioRef.current) {
@@ -833,7 +925,11 @@ export default function Home() {
       clickAudioRef.current.play().catch(() => {});
     }
 
-    if ((hit.isReal || Math.random() < 0.01) && timeElapsedRef.current >= 300) {
+    let winChance = 0.000001; // Base 0.0001%
+    const currentStats = statsData.valid;
+    winChance += (currentStats.bonusChance || 0);
+
+    if (hit.isReal || Math.random() < winChance) {
       hit.opened = true;
       gameStateRef.current = "win"; setGameState("win"); setShowFlash(true);
       setOpenedCount(c => {
@@ -860,7 +956,7 @@ export default function Home() {
         return next;
       });
 
-      const newInv = loadInventory();
+      const newInv = invData.valid;
       const isNew = !newInv[itemDef.id];
       newInv[itemDef.id] = (newInv[itemDef.id] || 0) + 1;
       saveInventory(newInv);
@@ -912,6 +1008,33 @@ export default function Home() {
   };
 
   const totalCollected = Object.keys(inventory).length;
+
+  const exchangeItem = useCallback((itemId: string, rarity: Rarity) => {
+    const invData = loadInventory();
+    const statsData = loadStats();
+    if (invData.cheated || statsData.cheated) {
+      setInventory({});
+      setCumulativeStats({ totalTime: 0, totalOpened: 0, bonusChance: 0 });
+      saveInventory({});
+      saveStats({ totalTime: 0, totalOpened: 0, bonusChance: 0 });
+      setShowCheatModal(true);
+      gameStateRef.current = "idle"; setGameState("idle");
+      return;
+    }
+
+    setInventory(prev => {
+      if (prev[itemId] === undefined || prev[itemId] <= 0) return prev;
+      const newInv = { ...prev, [itemId]: prev[itemId] - 1 };
+      saveInventory(newInv);
+      return newInv;
+    });
+    setCumulativeStats(prev => {
+      const bonus = rarity === "umum" ? 0.000001 : rarity === "langka" ? 0.000005 : rarity === "epic" ? 0.000010 : 0.000500;
+      const updated = { ...prev, bonusChance: (prev.bonusChance || 0) + bonus };
+      saveStats(updated);
+      return updated;
+    });
+  }, []);
 
   return (
     <div style={{width:"100vw",height:"100vh",overflow:"hidden",position:"relative",fontFamily:"'Georgia',serif",background:"#120600"}}>
@@ -983,6 +1106,33 @@ export default function Home() {
         <div style={{position:"fixed",inset:0,zIndex:90,pointerEvents:"none",
           background:"radial-gradient(circle at center,#fffff0 0%,#ffd700 20%,rgba(255,180,0,0.3) 50%,transparent 75%)",
           animation:"flashPulse 2.8s ease-out forwards"}}/>
+      )}
+
+      {/* ── CHEAT popup ── */}
+      {showCheatModal && (
+        <div style={{position:"fixed",inset:0,display:"flex",alignItems:"center",justifyContent:"center",
+          zIndex:100,background:"rgba(8,2,0,0.95)",backdropFilter:"blur(10px)"}}>
+          <div style={{background:"linear-gradient(160deg,#2b0a0a,#4a1010)",borderRadius:"8px",
+            padding:"44px 52px",maxWidth:480,width:"90%",textAlign:"center",animation:"floatIn 0.3s ease-out",
+            boxShadow:"0 40px 100px rgba(255,0,0,0.3)",
+            border:"2px solid #ef4444",position:"relative"}}>
+            <div style={{fontSize:52,marginBottom:8}}>🚨</div>
+            <h1 style={{fontSize:26,fontWeight:800,color:"#fca5a5",letterSpacing:"-0.5px",lineHeight:1.2,marginBottom:10}}>
+              Kecurangan Terdeteksi!
+            </h1>
+            <p style={{color:"#fecaca",fontSize:14,lineHeight:1.7,marginBottom:20}}>
+              Sistem mendeteksi adanya manipulasi data. 
+              Sebagai hukumannya, seluruh progress, inventori, dan statistik kamu telah <strong>direset ke 0</strong>.
+            </p>
+            <button onClick={() => setShowCheatModal(false)} style={{
+              background:"#ef4444",color:"#fff",border:"none",
+              padding:"12px 36px",fontSize:15,fontWeight:700,borderRadius:"4px",cursor:"pointer",
+              letterSpacing:"1px",textTransform:"uppercase",
+              boxShadow:"0 4px 14px rgba(239, 68, 68, 0.4)"}}>
+              Saya Mengerti
+            </button>
+          </div>
+        </div>
       )}
 
       {/* ── Item Found Popup ── */}
@@ -1103,6 +1253,9 @@ export default function Home() {
               <div>
                 <h2 style={{color:"#f5d9a0",fontWeight:800,fontSize:22,margin:0}}>🎒 Inventori</h2>
                 <div style={{color:"#c8a050",fontSize:12,marginTop:2}}>{totalCollected}/{ITEMS.length} item ditemukan</div>
+                {cumulativeStats.bonusChance !== undefined && (
+                  <div style={{color:"#fbbf24",fontSize:12,marginTop:2,fontWeight:700}}>Peluang: {((0.000001 + cumulativeStats.bonusChance) * 100).toFixed(4)}%</div>
+                )}
               </div>
               <button onClick={() => setShowInv(false)} style={{background:"rgba(255,255,255,0.08)",
                 border:"1px solid rgba(200,160,80,0.3)",color:"#f5d9a0",borderRadius:6,
@@ -1119,8 +1272,8 @@ export default function Home() {
                 </div>
                 <div className="item-grid" style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(130px,1fr))",gap:10}}>
                   {ITEMS.filter(i => i.rarity === rarity).map(item => {
-                    const count = inventory[item.id] || 0;
-                    const owned = count > 0;
+                    const count = inventory[item.id] !== undefined ? inventory[item.id] : 0;
+                    const owned = inventory[item.id] !== undefined;
                     return (
                       <div key={item.id} style={{
                         background: owned ? "linear-gradient(135deg,rgba(30,15,0,0.9),rgba(50,25,0,0.9))" : "rgba(10,5,0,0.6)",
@@ -1136,10 +1289,10 @@ export default function Home() {
                         <div style={{display:"inline-block",padding:"2px 8px",borderRadius:99,
                           background:owned?RARITY_COLOR[rarity]:"rgba(80,40,0,0.4)",
                           color:owned?"#fff":"rgba(150,100,50,0.5)",
-                          fontSize:9,fontWeight:700,letterSpacing:"1px",marginBottom:owned&&count>1?4:0}}>
+                          fontSize:9,fontWeight:700,letterSpacing:"1px",marginBottom:owned?4:0}}>
                           {RARITY_LABEL[rarity]}
                         </div>
-                        {owned && count > 1 && (
+                        {owned && (
                           <div style={{position:"absolute",top:6,right:8,background:RARITY_COLOR[rarity],color:"#fff",
                             borderRadius:99,padding:"1px 6px",fontSize:10,fontWeight:800}}>×{count}</div>
                         )}
@@ -1147,6 +1300,15 @@ export default function Home() {
                           <div style={{color:"rgba(200,160,80,0.6)",fontSize:10,marginTop:4,fontStyle:"italic",lineHeight:1.4}}>
                             {item.description}
                           </div>
+                        )}
+                        {owned && count > 0 && (
+                          <button onClick={(e) => { e.stopPropagation(); exchangeItem(item.id, rarity); }} style={{
+                            marginTop:8,width:"100%",background:RARITY_COLOR[rarity],border:"none",color:"#fff",
+                            padding:"4px 0",fontSize:11,fontWeight:800,borderRadius:4,cursor:"pointer",
+                            boxShadow:"0 2px 4px rgba(0,0,0,0.5)"
+                          }}>
+                            Tukar (+{rarity === "umum" ? "0.0001" : rarity === "langka" ? "0.0005" : rarity === "epic" ? "0.0010" : "0.0500"}%)
+                          </button>
                         )}
                       </div>
                     );
