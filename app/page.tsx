@@ -965,7 +965,7 @@ export default function Home() {
         <video
           autoPlay loop muted playsInline
           style={{position:"fixed",inset:0,width:"100%",height:"100%",objectFit:"cover",
-            opacity:0.10,mixBlendMode:"screen",pointerEvents:"none",zIndex:1}}>
+            opacity:0.10,mixBlendMode:"screen",pointerEvents:"none",zIndex:3}}>
           <source src="/video.mp4" type="video/mp4" />
         </video>
       )}
