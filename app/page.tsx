@@ -816,7 +816,7 @@ export default function Home() {
           .item-grid { grid-template-columns: repeat(auto-fill, minmax(105px, 1fr)) !important; gap: 8px !important; }
           .saweria-btn { padding: 8px 16px !important; font-size: 13px !important; }
           .item-popup { transform: translateX(-50%) scale(0.85) !important; bottom: 70px !important; }
-          .footer-saweria { height: 44px !important; }
+          .footer-saweria { height: 60px !important; }
         }
         @media (max-width: 380px) {
           .item-grid { grid-template-columns: repeat(auto-fill, minmax(90px, 1fr)) !important; }
@@ -936,10 +936,10 @@ export default function Home() {
           </div>
         </div>
 
-        <div className="footer-saweria" style={{height:52,
+        <div className="footer-saweria" style={{height:70,
           background:"linear-gradient(90deg,#1a0800,#2d1000,#1a0800)",
           borderTop:"1px solid rgba(200,160,80,0.12)",
-          display:"flex",alignItems:"center",justifyContent:"center"}}>
+          display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:4}}>
           <a href="https://saweria.co/aryatim" target="_blank" rel="noopener noreferrer" className="saweria-btn"
             style={{display:"inline-flex",alignItems:"center",gap:8,
               background:"linear-gradient(135deg,#f97316,#c2410c)",color:"#fff",textDecoration:"none",
@@ -948,6 +948,7 @@ export default function Home() {
             onMouseEnter={e=>{e.currentTarget.style.animationPlayState="paused";e.currentTarget.style.filter="brightness(1.18)";e.currentTarget.style.transform="scale(1.08)";}}
             onMouseLeave={e=>{e.currentTarget.style.animationPlayState="running";e.currentTarget.style.filter="";e.currentTarget.style.transform="";}}
           >☕ Jangan Lupa Support di Saweria YA!</a>
+          <div style={{color:"rgba(245,217,160,0.9)",fontSize:10,fontWeight:700,letterSpacing:"1px",textTransform:"uppercase"}}>100% DANA AKAN DI DONASIKAN KE PANTI ASUHAN</div>
         </div>
       </div>
 
