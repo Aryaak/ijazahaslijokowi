@@ -51,20 +51,30 @@ const RARITY_COLOR: Record<Rarity, string> = {
   epic:   "#a855f7",
   legend: "#f59e0b",
 };
-
 const RARITY_LABEL: Record<Rarity, string> = {
   umum:   "Umum",
   langka: "Langka",
   epic:   "Epic",
   legend: "Legendaris",
 };
-
 const RARITY_GLOW: Record<Rarity, string> = {
   umum:   "rgba(148,163,184,0.5)",
   langka: "rgba(59,130,246,0.6)",
   epic:   "rgba(168,85,247,0.7)",
   legend: "rgba(245,158,11,0.8)",
 };
+
+// ─── Detect low-end device ────────────────────────────────────────────────────
+function isLowEndDevice(): boolean {
+  if (typeof window === "undefined") return false;
+  const nav = navigator as any;
+  // Low memory or low CPU cores = low-end
+  if (nav.deviceMemory && nav.deviceMemory <= 2) return true;
+  if (nav.hardwareConcurrency && nav.hardwareConcurrency <= 2) return true;
+  // Small screen = likely mobile, treat as potentially low-end
+  if (window.innerWidth <= 480) return true;
+  return false;
+}
 
 // ─── Local Storage ────────────────────────────────────────────────────────────
 function getOrCreateUID(): string {
@@ -76,13 +86,11 @@ function getOrCreateUID(): string {
   }
   return uid;
 }
-
 function storageKey(uid: string) {
   let h = 0;
   for (let i = 0; i < uid.length; i++) h = (h * 31 + uid.charCodeAt(i)) >>> 0;
   return "inv_" + h.toString(36);
 }
-
 function loadInventory(): Record<string, number> {
   try {
     const uid = getOrCreateUID();
@@ -97,22 +105,18 @@ function loadInventory(): Record<string, number> {
     return valid;
   } catch { return {}; }
 }
-
 function saveInventory(inv: Record<string, number>) {
   try {
     const uid = getOrCreateUID();
     localStorage.setItem(storageKey(uid), JSON.stringify(inv));
   } catch {}
 }
-
 function statsKey(uid: string) {
   let h = 0;
   for (let i = 0; i < uid.length; i++) h = (h * 17 + uid.charCodeAt(i)) >>> 0;
   return "stats_" + h.toString(36);
 }
-
 interface GameStats { totalTime: number; totalOpened: number; }
-
 function loadStats(): GameStats {
   try {
     const uid = getOrCreateUID();
@@ -125,7 +129,6 @@ function loadStats(): GameStats {
     };
   } catch { return { totalTime: 0, totalOpened: 0 }; }
 }
-
 function saveStats(s: GameStats) {
   try {
     const uid = getOrCreateUID();
@@ -152,14 +155,13 @@ interface Env {
   fadeTimer: number;
   opacity: number;
   row: number;
-  isItemShake: boolean;      // flag shake karena item (tidak akan jadi zonked)
-  itemOpenProgress: number;  // 0..1 animasi buka amplop item (flap terbuka)
-  itemEmoji: string;         // emoji item yang keluar
-  itemRarity: Rarity | null; // rarity untuk warna glow
+  isItemShake: boolean;
+  itemOpenProgress: number;
+  itemEmoji: string;
+  itemRarity: Rarity | null;
 }
 
-// ─── Game constants ───────────────────────────────────────────────────────────
-const TOTAL = 50;
+const TOTAL = 30;
 const ROWS  = 5;
 const W = 90;
 const H = 66;
@@ -218,98 +220,152 @@ function playItem(ctx: AudioContext, rarity: Rarity) {
   });
 }
 
-// ─── Canvas draw ──────────────────────────────────────────────────────────────
-function drawEnvelope(ctx2d: CanvasRenderingContext2D, env: Env, hovered: boolean, shakeX: number) {
+// ─── OPTIMIZED Canvas draw ────────────────────────────────────────────────────
+// Precompute shadow/color strings untuk tiap state (hindari string concat di render loop)
+const SHADOW_COLOR_IDLE    = "rgba(0,0,0,0.35)";
+const SHADOW_COLOR_HOVER   = "rgba(200,160,80,0.5)";
+const SHADOW_COLOR_ZONKED  = "rgba(200,30,30,0.35)";
+const SHADOW_COLOR_OPENED  = "rgba(255,215,0,0.6)";
+
+// Precomputed color sets per state
+const COLORS_NORMAL  = { body:"#8B5E2A", bodyDk:"#7a5020", flap:"#9a6a2a", stroke:"#6b4515", topFlap:"#b07838" };
+const COLORS_ZONKED  = { body:"#4e0e0e", bodyDk:"#3e0808", flap:"#621212", stroke:"#9b1c1c", topFlap:"#5e1010" };
+const COLORS_OPENED  = { body:"#7a5200", bodyDk:"#6a4600", flap:"#8a5e00", stroke:"#f5d000", topFlap:"#9a6020" };
+const COLORS_ITEM    = { body:"#8B5E2A", bodyDk:"#7a5020", flap:"#9a6a2a", stroke:"#f5c842", topFlap:"#b07838" };
+
+function drawEnvelope(
+  ctx2d: CanvasRenderingContext2D,
+  env: Env,
+  hovered: boolean,
+  shakeX: number,
+  lowEnd: boolean
+) {
   const cx = env.x + shakeX;
   const cy = env.y;
-  const p  = env.itemOpenProgress; // 0..1 animasi item keluar
+  const p  = env.itemOpenProgress;
   const s  = env.scale * (hovered && !env.zonked && !env.opened ? 1.1 : 1);
   const w  = W * s, h = H * s, hw = w/2, hh = h/2;
-
-  const rarityGlowMap: Record<string, string> = {
-    umum:   "rgba(148,163,184,0.7)",
-    langka: "rgba(59,130,246,0.85)",
-    epic:   "rgba(168,85,247,0.9)",
-    legend: "rgba(245,158,11,1.0)",
-  };
-  const itemGlow = env.itemRarity ? rarityGlowMap[env.itemRarity] : "rgba(255,220,80,0.7)";
+  const isItemOpen = p > 0;
 
   ctx2d.save();
   ctx2d.translate(cx, cy);
 
-  const isItemOpen = p > 0;
-  ctx2d.shadowColor   = env.opened ? "rgba(255,215,0,0.7)"
-                      : env.zonked ? "rgba(200,30,30,0.4)"
-                      : isItemOpen  ? itemGlow
-                      : hovered     ? "rgba(200,160,80,0.55)"
-                      :               "rgba(0,0,0,0.45)";
-  ctx2d.shadowBlur    = env.opened ? 28 : isItemOpen ? 18 + p * 22 : hovered ? 14 : 8;
-  ctx2d.shadowOffsetY = hovered ? -4 : 3;
-
-  const body    = env.zonked ? "#4e0e0e" : env.opened ? "#7a5200" : "#8B5E2A";
-  const bodyDk  = env.zonked ? "#3e0808" : env.opened ? "#6a4600" : "#7a5020";
-  const flap    = env.zonked ? "#621212" : env.opened ? "#8a5e00" : "#9a6a2a";
-  const stroke  = env.zonked ? "#9b1c1c" : env.opened ? "#f5d000" : isItemOpen ? "#f5c842" : "#6b4515";
-  const topFlap = env.zonked ? "#5e1010" : env.opened ? "#9a6020" : "#b07838";
-
-  ctx2d.beginPath(); ctx2d.roundRect(-hw, -hh+h*0.16, w, h*0.84, 3*s);
-  ctx2d.fillStyle = body; ctx2d.fill();
-  ctx2d.beginPath(); ctx2d.rect(-hw, -hh+h*0.55, w, h*0.45);
-  ctx2d.fillStyle = bodyDk; ctx2d.fill();
-  ctx2d.shadowBlur = 0; ctx2d.shadowColor = "transparent"; ctx2d.shadowOffsetY = 0;
-
-  for (const side of [-1, 1]) {
-    ctx2d.beginPath(); ctx2d.moveTo(hw*side, -hh+h*0.16); ctx2d.lineTo(0, -hh+h*0.62); ctx2d.lineTo(hw*side, hh); ctx2d.closePath();
-    ctx2d.fillStyle = flap; ctx2d.fill(); ctx2d.strokeStyle = stroke; ctx2d.lineWidth = s; ctx2d.stroke();
+  // ── Shadow: skip heavy shadow on low-end, use lighter version
+  if (!lowEnd) {
+    if (env.opened) {
+      ctx2d.shadowColor = SHADOW_COLOR_OPENED;
+      ctx2d.shadowBlur = 24;
+    } else if (env.zonked) {
+      ctx2d.shadowColor = SHADOW_COLOR_ZONKED;
+      ctx2d.shadowBlur = 10;
+    } else if (isItemOpen) {
+      ctx2d.shadowColor = env.itemRarity ? RARITY_GLOW[env.itemRarity] : "rgba(255,220,80,0.65)";
+      ctx2d.shadowBlur = 14 + p * 16;
+    } else if (hovered) {
+      ctx2d.shadowColor = SHADOW_COLOR_HOVER;
+      ctx2d.shadowBlur = 12;
+    } else {
+      ctx2d.shadowColor = SHADOW_COLOR_IDLE;
+      ctx2d.shadowBlur = 6;
+    }
+    ctx2d.shadowOffsetY = hovered ? -3 : 2;
   }
 
+  const C = env.zonked ? COLORS_ZONKED : env.opened ? COLORS_OPENED : isItemOpen ? COLORS_ITEM : COLORS_NORMAL;
+
+  // Body bottom
+  ctx2d.beginPath();
+  ctx2d.roundRect(-hw, -hh+h*0.16, w, h*0.84, 3*s);
+  ctx2d.fillStyle = C.body;
+  ctx2d.fill();
+
+  // Body dark lower part
+  ctx2d.beginPath();
+  ctx2d.rect(-hw, -hh+h*0.55, w, h*0.45);
+  ctx2d.fillStyle = C.bodyDk;
+  ctx2d.fill();
+
+  // Reset shadow before decorations (performance: don't re-apply shadow per shape)
+  if (!lowEnd) {
+    ctx2d.shadowBlur = 0;
+    ctx2d.shadowColor = "transparent";
+    ctx2d.shadowOffsetY = 0;
+  }
+
+  // Side flaps
+  for (const side of [-1, 1]) {
+    ctx2d.beginPath();
+    ctx2d.moveTo(hw*side, -hh+h*0.16);
+    ctx2d.lineTo(0, -hh+h*0.62);
+    ctx2d.lineTo(hw*side, hh);
+    ctx2d.closePath();
+    ctx2d.fillStyle = C.flap;
+    ctx2d.fill();
+    ctx2d.strokeStyle = C.stroke;
+    ctx2d.lineWidth = s;
+    ctx2d.stroke();
+  }
+
+  // Top flap
   ctx2d.beginPath();
   if (env.zonked || env.opened) {
     ctx2d.moveTo(-hw,-hh+h*0.16); ctx2d.lineTo(0,-hh-h*0.08); ctx2d.lineTo(hw,-hh+h*0.16);
   } else if (p > 0) {
-    // Flap terbuka bertahap: lerp dari tutup ke buka
     const flapTip = (-hh + h * 0.58) * (1 - p) + (-hh - h * 0.08) * p;
     ctx2d.moveTo(-hw,-hh+h*0.16); ctx2d.lineTo(0, flapTip); ctx2d.lineTo(hw,-hh+h*0.16);
   } else {
     ctx2d.moveTo(-hw,-hh+h*0.16); ctx2d.lineTo(0,-hh+h*0.58); ctx2d.lineTo(hw,-hh+h*0.16);
   }
-  ctx2d.closePath(); ctx2d.fillStyle = topFlap; ctx2d.strokeStyle = stroke; ctx2d.lineWidth = s*1.2; ctx2d.fill(); ctx2d.stroke();
+  ctx2d.closePath();
+  ctx2d.fillStyle = C.topFlap;
+  ctx2d.strokeStyle = C.stroke;
+  ctx2d.lineWidth = s*1.2;
+  ctx2d.fill();
+  ctx2d.stroke();
 
-  // Seal — hanya tampil jika amplop masih tertutup & bukan sedang buka item
+  // Seal (only when closed & no item animation)
   if (!env.zonked && !env.opened && p === 0) {
     const sr = 9*s, sy = -hh+h*0.62;
-    ctx2d.beginPath(); ctx2d.arc(0,sy,sr,0,Math.PI*2);
-    ctx2d.fillStyle = "#c0392b"; ctx2d.fill();
-    ctx2d.strokeStyle = "#8b1515"; ctx2d.lineWidth = s; ctx2d.stroke();
+    ctx2d.beginPath();
+    ctx2d.arc(0, sy, sr, 0, Math.PI*2);
+    ctx2d.fillStyle = "#c0392b";
+    ctx2d.fill();
+    if (!lowEnd) { ctx2d.strokeStyle = "#8b1515"; ctx2d.lineWidth = s; ctx2d.stroke(); }
     ctx2d.fillStyle = "#fff";
-    ctx2d.font = `bold ${10*s}px serif`; ctx2d.textAlign="center"; ctx2d.textBaseline="middle";
+    ctx2d.font = `bold ${10*s}px serif`;
+    ctx2d.textAlign = "center";
+    ctx2d.textBaseline = "middle";
     ctx2d.fillText("✦", 0, sy + s*0.5);
   }
 
   // Zonk label
   if (env.zonked) {
-    ctx2d.fillStyle="#ef4444"; ctx2d.font=`900 ${16*s}px Georgia,serif`; ctx2d.textAlign="center"; ctx2d.textBaseline="middle";
+    ctx2d.fillStyle = "#ef4444";
+    ctx2d.font = `900 ${16*s}px Georgia,serif`;
+    ctx2d.textAlign = "center";
+    ctx2d.textBaseline = "middle";
     ctx2d.fillText("ZONK!", 0, -hh+h*0.5);
-    ctx2d.fillStyle="rgba(239,68,68,0.35)"; ctx2d.font=`bold ${13*s}px Georgia,serif`;
+    ctx2d.fillStyle = "rgba(239,68,68,0.35)";
+    ctx2d.font = `bold ${13*s}px Georgia,serif`;
     ctx2d.fillText("✕", 0, -hh+h*0.72);
   }
 
-  // ── Item open: emoji melambung keluar dari amplop ──
+  // Item open: emoji flying up
   if (p > 0 && env.itemEmoji && !env.opened) {
     const emojiY     = (-hh - h * 0.1) - p * h * 1.3;
     const emojiScale = 0.5 + p * 0.9;
     const emojiAlpha = p < 0.18 ? p / 0.18 : p > 0.72 ? (1 - p) / 0.28 : 1;
     const fontSize   = 22 * s * emojiScale;
 
-    // Rarity glow ring
-    if (p > 0.12) {
+    // Rarity glow ring (skip on low-end)
+    if (!lowEnd && p > 0.12 && env.itemRarity) {
       ctx2d.save();
-      ctx2d.globalAlpha = emojiAlpha * 0.55;
-      ctx2d.shadowColor = itemGlow;
-      ctx2d.shadowBlur  = 26 * p;
+      ctx2d.globalAlpha = emojiAlpha * 0.45;
+      ctx2d.shadowColor = RARITY_GLOW[env.itemRarity];
+      ctx2d.shadowBlur  = 20 * p;
       ctx2d.beginPath();
-      ctx2d.arc(0, emojiY, fontSize * 0.62, 0, Math.PI * 2);
-      ctx2d.fillStyle = "rgba(255,255,255,0.07)";
+      ctx2d.arc(0, emojiY, fontSize * 0.6, 0, Math.PI * 2);
+      ctx2d.fillStyle = "rgba(255,255,255,0.06)";
       ctx2d.fill();
       ctx2d.restore();
     }
@@ -323,7 +379,7 @@ function drawEnvelope(ctx2d: CanvasRenderingContext2D, env: Env, hovered: boolea
     ctx2d.restore();
   }
 
-  // Opened state (ijazah asli)
+  // Opened: document inside
   if (env.opened) {
     const dw=w*0.45, dh=h*0.42;
     ctx2d.fillStyle="#fdf3dc"; ctx2d.strokeStyle="#c8a050"; ctx2d.lineWidth=s;
@@ -335,8 +391,12 @@ function drawEnvelope(ctx2d: CanvasRenderingContext2D, env: Env, hovered: boolea
     ctx2d.fillText("ASLI", 0, -hh+dh*0.78);
   }
 
-  ctx2d.strokeStyle = env.zonked?"rgba(155,28,28,0.3)":env.opened?"rgba(245,200,0,0.4)":"rgba(160,112,48,0.38)";
-  ctx2d.lineWidth=s*0.8; ctx2d.strokeRect(hw-w*0.32,-hh+h*0.18,w*0.26,h*0.22);
+  // Outline detail (skip on low-end for perf)
+  if (!lowEnd) {
+    ctx2d.strokeStyle = env.zonked ? "rgba(155,28,28,0.3)" : env.opened ? "rgba(245,200,0,0.4)" : "rgba(160,112,48,0.35)";
+    ctx2d.lineWidth = s*0.8;
+    ctx2d.strokeRect(hw-w*0.32, -hh+h*0.18, w*0.26, h*0.22);
+  }
 
   ctx2d.restore();
 }
@@ -364,7 +424,7 @@ const INVESTORS = [
   { name: "fufufafa win",      amount: "Rp15.000", rank: 19 },
   { name: "insyaAllah berkah", amount: "Rp5.000",  rank: 20 },
   { name: "Kins",              amount: "Rp5.000",  rank: 21 },
-  { name: "rifkayy",           amount: "Rp5.000",  rank: 22 },
+  { name: "rifkayy",          amount: "Rp5.000",  rank: 22 },
   { name: "SFZ",               amount: "Rp5.000",  rank: 23 },
   { name: "lunellaby",         amount: "Rp5.000",  rank: 24 },
   { name: "IstriKyu",          amount: "Rp5.000",  rank: 25 },
@@ -392,11 +452,13 @@ const INVESTORS = [
   { name: "Tadi",              amount: "Rp1.000",  rank: 47 },
 ];
 
-// ─── Confetti particle type ───────────────────────────────────────────────────
+// ─── Confetti ─────────────────────────────────────────────────────────────────
+const MAX_PARTICLES = 120; // hard cap to prevent mobile slowdown
+
 interface Particle {
   x: number; y: number; vx: number; vy: number;
-  color: string; size: number; life: number; maxLife: number;
-  rot: number; rotV: number; shape: "rect"|"circle";
+  color: string; size: number; life: number;
+  rot: number; rotV: number; shape: 0 | 1; // 0=rect, 1=circle
 }
 
 // ─── Main Component ───────────────────────────────────────────────────────────
@@ -409,7 +471,6 @@ export default function Home() {
   const audioRef     = useRef<AudioContext | null>(null);
   const gameStateRef = useRef<"idle"|"playing"|"win">("idle");
   const idCounterRef = useRef<number>(0);
-  const realPlacedRef= useRef<boolean>(false);
   const sizeRef      = useRef({ w: 1920, h: 1080 });
   const timerRef     = useRef<ReturnType<typeof setInterval>|null>(null);
   const particlesRef = useRef<Particle[]>([]);
@@ -417,6 +478,11 @@ export default function Home() {
   const bgmRef       = useRef<HTMLAudioElement | null>(null);
   const clickAudioRef= useRef<HTMLAudioElement | null>(null);
   const itemAudioRef = useRef<HTMLAudioElement | null>(null);
+  const lowEndRef    = useRef<boolean>(false);
+  // FPS throttle: target ~60fps desktop, ~30fps mobile
+  const fpsIntervalRef = useRef<number>(1000 / 60);
+  // Mousemove debounce
+  const lastMoveRef  = useRef<number>(0);
 
   const [gameState,   setGameState]   = useState<"idle"|"playing"|"win">("idle");
   const [timeElapsed, setTimeElapsed] = useState(0);
@@ -435,12 +501,16 @@ export default function Home() {
     setInventory(loadInventory());
     setCumulativeStats(loadStats());
 
+    // Detect device capability after mount
+    lowEndRef.current = isLowEndDevice();
+    fpsIntervalRef.current = lowEndRef.current ? 1000 / 30 : 1000 / 60;
+
     if (typeof window !== "undefined") {
       bgmRef.current = new Audio("/music.mp3");
       bgmRef.current.loop = true;
       bgmRef.current.volume = 0.3;
       clickAudioRef.current = new Audio("/click.mp3");
-      itemAudioRef.current = new Audio("/item.mp3");
+      itemAudioRef.current  = new Audio("/item.mp3");
     }
   }, []);
 
@@ -452,101 +522,137 @@ export default function Home() {
 
   const spawnConfetti = useCallback((x: number, y: number, rarity: Rarity, count = 18) => {
     const palettes: Record<Rarity, string[]> = {
-      umum:   ["#94a3b8","#cbd5e1","#e2e8f0","#fff"],
-      langka: ["#3b82f6","#60a5fa","#93c5fd","#fff","#1d4ed8"],
-      epic:   ["#a855f7","#c084fc","#e879f9","#fff","#7c3aed"],
-      legend: ["#f59e0b","#fbbf24","#fcd34d","#fff","#d97706","#ef4444"],
+      umum:   ["#94a3b8","#cbd5e1","#fff"],
+      langka: ["#3b82f6","#60a5fa","#fff","#1d4ed8"],
+      epic:   ["#a855f7","#c084fc","#fff","#7c3aed"],
+      legend: ["#f59e0b","#fbbf24","#fff","#d97706","#ef4444"],
     };
     const colors = palettes[rarity];
-    for (let i = 0; i < count; i++) {
-      const angle = (Math.random() * Math.PI * 2);
-      const speed = 3 + Math.random() * 6;
+    // Respect particle cap — trim oldest if needed
+    const budget = Math.min(count, MAX_PARTICLES - particlesRef.current.length + count);
+    if (budget <= 0) return;
+    if (particlesRef.current.length + budget > MAX_PARTICLES) {
+      particlesRef.current.splice(0, particlesRef.current.length + budget - MAX_PARTICLES);
+    }
+    // Reduce particle count on low-end
+    const actualCount = lowEndRef.current ? Math.ceil(budget * 0.5) : budget;
+    for (let i = 0; i < actualCount; i++) {
+      const angle = Math.random() * Math.PI * 2;
+      const speed = 3 + Math.random() * 5;
       particlesRef.current.push({
         x, y,
         vx: Math.cos(angle) * speed,
-        vy: Math.sin(angle) * speed - 4,
+        vy: Math.sin(angle) * speed - 3.5,
         color: colors[Math.floor(Math.random() * colors.length)],
-        size: 4 + Math.random() * 6,
-        life: 1, maxLife: 1,
+        size: 4 + Math.random() * 5,
+        life: 1,
         rot: Math.random() * Math.PI * 2,
-        rotV: (Math.random() - 0.5) * 0.3,
-        shape: Math.random() > 0.4 ? "rect" : "circle",
+        rotV: (Math.random() - 0.5) * 0.28,
+        shape: Math.random() > 0.4 ? 0 : 1,
       });
     }
   }, []);
 
-  const spawnEnv = useCallback((cw: number, ch: number, row: number, offsetX=0): Env => {
-    const FOOTER_H=80, playH=ch-FOOTER_H;
-    const rowH=(playH*0.82)/ROWS, topPad=playH*0.13;
-    const baseY=topPad+row*rowH+rowH/2+(Math.random()-0.5)*10;
+  const spawnEnv = useCallback((cw: number, ch: number, row: number, offsetX = 0): Env => {
+    const FOOTER_H = 80, playH = ch - FOOTER_H;
+    const rowH = (playH * 0.82) / ROWS, topPad = playH * 0.13;
+    const baseY = topPad + row * rowH + rowH / 2 + (Math.random() - 0.5) * 10;
     const hasItem = Math.random() < ITEM_SPAWN_CHANCE;
     return {
       id: idCounterRef.current++,
-      x: cw+W+offsetX+Math.random()*60, y: baseY,
-      vx: (0.045+Math.random()*0.045)*cw*0.001,
-      wobble: Math.random()*Math.PI*2, wobbleAmp: 2.5+Math.random()*3, wobbleSpeed: 0.0008+Math.random()*0.0006,
-      scale: 0.78+Math.random()*0.28,
-      isReal: false, itemId: hasItem ? pickRandomItem().id : null,
-      zonked:false, opened:false, shakeTimer:0, shakePhase:0, fadeTimer:0, opacity:1, row,
-      isItemShake: false, itemOpenProgress: 0, itemEmoji: "", itemRarity: null,
+      x: cw + W + offsetX + Math.random() * 60,
+      y: baseY,
+      vx: (0.045 + Math.random() * 0.045) * cw * 0.001,
+      wobble: Math.random() * Math.PI * 2,
+      wobbleAmp: 2.5 + Math.random() * 3,
+      wobbleSpeed: 0.0008 + Math.random() * 0.0006,
+      scale: 0.78 + Math.random() * 0.28,
+      isReal: false,
+      itemId: hasItem ? pickRandomItem().id : null,
+      zonked: false, opened: false,
+      shakeTimer: 0, shakePhase: 0,
+      fadeTimer: 0, opacity: 1, row,
+      isItemShake: false, itemOpenProgress: 0,
+      itemEmoji: "", itemRarity: null,
     };
   }, []);
 
   const generateEnvelopes = useCallback((cw: number, ch: number): Env[] => {
-    idCounterRef.current = 0; realPlacedRef.current = true;
-    const FOOTER_H=80, playH=ch-FOOTER_H;
-    const rowH=(playH*0.82)/ROWS, topPad=playH*0.13;
+    idCounterRef.current = 0;
+    const FOOTER_H = 80, playH = ch - FOOTER_H;
+    const rowH = (playH * 0.82) / ROWS, topPad = playH * 0.13;
     const envs: Env[] = [];
-    for (let i=0;i<TOTAL;i++) {
-      const row=i%ROWS, col=Math.floor(i/ROWS), totalCols=Math.ceil(TOTAL/ROWS);
-      const baseY=topPad+row*rowH+rowH/2+(Math.random()-0.5)*10;
-      const hasItem=Math.random()<ITEM_SPAWN_CHANCE;
+    for (let i = 0; i < TOTAL; i++) {
+      const row = i % ROWS, col = Math.floor(i / ROWS);
+      const totalCols = Math.ceil(TOTAL / ROWS);
+      const baseY = topPad + row * rowH + rowH / 2 + (Math.random() - 0.5) * 10;
+      const hasItem = Math.random() < ITEM_SPAWN_CHANCE;
       envs.push({
         id: idCounterRef.current++,
-        x: cw*1.05+col*(cw*1.2/totalCols)+(Math.random()-0.5)*12, y: baseY,
-        vx: (0.045+Math.random()*0.045)*cw*0.001,
-        wobble: Math.random()*Math.PI*2, wobbleAmp: 2.5+Math.random()*3, wobbleSpeed: 0.0008+Math.random()*0.0006,
-        scale: 0.78+Math.random()*0.28,
+        x: cw * 1.05 + col * (cw * 1.2 / totalCols) + (Math.random() - 0.5) * 12,
+        y: baseY,
+        vx: (0.045 + Math.random() * 0.045) * cw * 0.001,
+        wobble: Math.random() * Math.PI * 2,
+        wobbleAmp: 2.5 + Math.random() * 3,
+        wobbleSpeed: 0.0008 + Math.random() * 0.0006,
+        scale: 0.78 + Math.random() * 0.28,
         isReal: false,
         itemId: hasItem ? pickRandomItem().id : null,
-        zonked:false, opened:false, shakeTimer:0, shakePhase:0, fadeTimer:0, opacity:1, row,
-        isItemShake: false, itemOpenProgress: 0, itemEmoji: "", itemRarity: null,
+        zonked: false, opened: false,
+        shakeTimer: 0, shakePhase: 0,
+        fadeTimer: 0, opacity: 1, row,
+        isItemShake: false, itemOpenProgress: 0,
+        itemEmoji: "", itemRarity: null,
       });
     }
     return envs;
-  }, [spawnEnv]);
+  }, []);
 
-  // ── Render loop ──
+  // ── Render loop (FPS-throttled) ──
   const render = useCallback((ts: number) => {
-    const canvas=canvasRef.current; if (!canvas) return;
-    const ctx=canvas.getContext("2d"); if (!ctx) return;
-    const {w:cw}=sizeRef.current; const ch=canvas.height;
-    const delta=Math.min(ts-lastTRef.current,50); lastTRef.current=ts;
+    rafRef.current = requestAnimationFrame(render);
 
-    ctx.clearRect(0,0,cw,ch);
+    // FPS throttle
+    const elapsed = ts - lastTRef.current;
+    if (elapsed < fpsIntervalRef.current) return;
+    // Snap last time to grid to avoid drift
+    lastTRef.current = ts - (elapsed % fpsIntervalRef.current);
+    const delta = Math.min(elapsed, 60); // cap delta at 60ms
 
-    const envs=envsRef.current, isPlaying=gameStateRef.current==="playing";
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d", { alpha: false })!;
+    if (!ctx) return;
+    const cw = canvas.width, ch = canvas.height;
+    const lowEnd = lowEndRef.current;
+
+    // Clear with background color (alpha:false is faster)
+    ctx.fillStyle = "#120600";
+    ctx.fillRect(0, 0, cw, ch);
+
+    const envs = envsRef.current;
+    const isPlaying = gameStateRef.current === "playing";
     const unlocked = timeElapsedRef.current >= 300;
-    const toRemove:number[]=[];
+    const toRemove: number[] = [];
 
-    for (let i=0;i<envs.length;i++) {
-      const e=envs[i];
+    for (let i = 0; i < envs.length; i++) {
+      const e = envs[i];
+
       if (isPlaying) {
-        if (!e.zonked&&!e.opened&&e.fadeTimer===0) {
-          e.x-=e.vx*delta;
-          if (e.x<-W) e.x=cw+W/2+Math.random()*80;
-          e.wobble+=e.wobbleSpeed*delta;
+        if (!e.zonked && !e.opened && e.fadeTimer === 0) {
+          e.x -= e.vx * delta;
+          if (e.x < -W) e.x = cw + W / 2 + Math.random() * 80;
+          e.wobble += e.wobbleSpeed * delta;
         }
-        if (e.shakeTimer>0) {
-          e.shakeTimer-=delta; e.shakePhase+=0.6;
-          // Animasi buka amplop: progress 0→1 selama shakeTimer berlangsung
+        if (e.shakeTimer > 0) {
+          e.shakeTimer -= delta;
+          e.shakePhase += 0.6;
           if (e.isItemShake) {
             e.itemOpenProgress = Math.min(1, 1 - e.shakeTimer / 620);
           }
-          if (e.shakeTimer<=0) {
-            e.shakeTimer=0;
+          if (e.shakeTimer <= 0) {
+            e.shakeTimer = 0;
             if (e.isItemShake) {
-              // item shake selesai → fade out tanpa zonked
               e.isItemShake = false;
               e.itemOpenProgress = 1;
               e.fadeTimer = 900;
@@ -556,52 +662,54 @@ export default function Home() {
             }
           }
         }
-        // Fade out untuk zonked (1400ms) ATAU item open yang sudah selesai (900ms)
         if (e.fadeTimer > 0 && !e.isItemShake) {
           const maxFade = e.zonked ? 1400 : 900;
           e.fadeTimer -= delta;
           e.opacity = Math.max(0, e.fadeTimer / maxFade);
-          // Saat fade, progress item open tetap di 1 (flap tetap terbuka)
           if (e.fadeTimer <= 0) toRemove.push(i);
         }
       }
 
-      if (unlocked && isPlaying && !e.zonked && !e.opened && e.opacity > 0.5) {
-        const pulse = 0.3 + 0.25 * Math.sin(ts * 0.003 + e.id * 0.7);
+      // Unlock glow effect (simplified on low-end)
+      if (unlocked && isPlaying && !e.zonked && !e.opened && e.opacity > 0.5 && !lowEnd) {
+        const pulse = 0.28 + 0.22 * Math.sin(ts * 0.003 + e.id * 0.7);
         ctx.save();
         ctx.globalAlpha = e.opacity * pulse;
         ctx.shadowColor = "#fbbf24";
-        ctx.shadowBlur  = 28;
+        ctx.shadowBlur  = 22;
         ctx.beginPath();
-        ctx.ellipse(e.x, e.y, W * e.scale * 0.55, H * e.scale * 0.45, 0, 0, Math.PI * 2);
-        ctx.fillStyle = "rgba(251,191,36,0.08)";
+        ctx.ellipse(e.x, e.y, W * e.scale * 0.52, H * e.scale * 0.42, 0, 0, Math.PI * 2);
+        ctx.fillStyle = "rgba(251,191,36,0.07)";
         ctx.fill();
         ctx.restore();
       }
 
-      const wobbleY=Math.sin(e.wobble)*(e.zonked?0.8:e.wobbleAmp);
-      const shakeX=e.shakeTimer>0?Math.sin(e.shakePhase)*10*(e.shakeTimer/600):0;
-      ctx.globalAlpha=e.opacity;
-      drawEnvelope(ctx,{...e,y:e.y+wobbleY},hoveredRef.current===e.id,shakeX);
-      ctx.globalAlpha=1;
+      const wobbleY = Math.sin(e.wobble) * (e.zonked ? 0.8 : e.wobbleAmp);
+      const shakeX  = e.shakeTimer > 0 ? Math.sin(e.shakePhase) * 9 * (e.shakeTimer / 600) : 0;
+
+      ctx.globalAlpha = e.opacity;
+      drawEnvelope(ctx, { ...e, y: e.y + wobbleY }, hoveredRef.current === e.id, shakeX, lowEnd);
+      ctx.globalAlpha = 1;
     }
 
-    // Confetti
+    // ── Confetti (batch draw same-color particles) ──
     const particles = particlesRef.current;
     for (let i = particles.length - 1; i >= 0; i--) {
       const p = particles[i];
-      p.x  += p.vx; p.y += p.vy;
-      p.vy += 0.25;
+      p.x  += p.vx;
+      p.y  += p.vy;
+      p.vy += 0.22;
       p.vx *= 0.98;
       p.rot += p.rotV;
-      p.life -= 0.022;
+      p.life -= lowEnd ? 0.032 : 0.022; // fade faster on low-end = fewer active particles
       if (p.life <= 0) { particles.splice(i, 1); continue; }
+
       ctx.save();
       ctx.globalAlpha = Math.min(1, p.life * 3);
       ctx.fillStyle = p.color;
       ctx.translate(p.x, p.y);
       ctx.rotate(p.rot);
-      if (p.shape === "rect") {
+      if (p.shape === 0) {
         ctx.fillRect(-p.size / 2, -p.size / 4, p.size, p.size / 2);
       } else {
         ctx.beginPath(); ctx.arc(0, 0, p.size / 2, 0, Math.PI * 2); ctx.fill();
@@ -609,57 +717,68 @@ export default function Home() {
       ctx.restore();
     }
 
-    if (toRemove.length>0&&isPlaying) {
-      // Deduplicate & sort descending untuk splice yang aman
-      const uniqueRemove = [...new Set(toRemove)].sort((a,b)=>b-a);
+    if (toRemove.length > 0 && isPlaying) {
+      const uniqueRemove = [...new Set(toRemove)].sort((a, b) => b - a);
       for (const idx of uniqueRemove) {
-        const dead=envs[idx];
-        envs.splice(idx,1);
-        envs.push(spawnEnv(cw,ch,dead.row,Math.random()*200));
+        const dead = envs[idx];
+        envs.splice(idx, 1);
+        envs.push(spawnEnv(cw, ch, dead.row, Math.random() * 200));
       }
     }
-
-    rafRef.current=requestAnimationFrame(render);
   }, [spawnEnv]);
 
-  const hitTest = useCallback((mx:number,my:number):Env|null => {
-    const envs=envsRef.current;
-    for (let i=envs.length-1;i>=0;i--) {
-      const e=envs[i];
-      if (e.zonked||e.opened||e.opacity<0.5) continue;
-      const w=W*e.scale,h=H*e.scale;
-      if (mx>=e.x-w/2&&mx<=e.x+w/2&&my>=e.y-h/2&&my<=e.y+h/2) return e;
+  const hitTest = useCallback((mx: number, my: number): Env | null => {
+    const envs = envsRef.current;
+    for (let i = envs.length - 1; i >= 0; i--) {
+      const e = envs[i];
+      if (e.zonked || e.opened || e.opacity < 0.5) continue;
+      const w = W * e.scale, h = H * e.scale;
+      if (mx >= e.x - w / 2 && mx <= e.x + w / 2 && my >= e.y - h / 2 && my <= e.y + h / 2) return e;
     }
     return null;
   }, []);
 
   const startGame = useCallback(() => {
-    const canvas=canvasRef.current; if (!canvas) return;
-    const cw=canvas.width, ch=canvas.height;
-    sizeRef.current={w:cw,h:ch};
-    realPlacedRef.current=false;
-    envsRef.current=generateEnvelopes(cw,ch);
+    const canvas = canvasRef.current; if (!canvas) return;
+    const cw = canvas.width, ch = canvas.height;
+    sizeRef.current = { w: cw, h: ch };
+    envsRef.current = generateEnvelopes(cw, ch);
     setTimeElapsed(0); timeElapsedRef.current = 0;
-    setZonkedCount(0); setOpenedCount(0); setShowFlash(false); setHasOpenedInv(false); setSessionItemCount(0);
+    setZonkedCount(0); setOpenedCount(0);
+    setShowFlash(false); setHasOpenedInv(false); setSessionItemCount(0);
     particlesRef.current = [];
-    gameStateRef.current="playing"; setGameState("playing");
-
-    if (bgmRef.current) {
-      bgmRef.current.play().catch(e => console.log("Audio play blocked", e));
-    }
+    gameStateRef.current = "playing"; setGameState("playing");
+    if (bgmRef.current) bgmRef.current.play().catch(() => {});
   }, [generateEnvelopes]);
 
   useEffect(() => {
-    const resize=()=>{ const c=canvasRef.current; if(!c) return; c.width=window.innerWidth; c.height=window.innerHeight; sizeRef.current={w:window.innerWidth,h:window.innerHeight}; };
-    resize(); window.addEventListener("resize",resize);
-    return ()=>window.removeEventListener("resize",resize);
+    const resize = () => {
+      const c = canvasRef.current; if (!c) return;
+      // Use logical pixels (no DPR scaling on mobile = big perf win)
+      const dpr = lowEndRef.current ? 1 : Math.min(window.devicePixelRatio || 1, 2);
+      const lw = window.innerWidth, lh = window.innerHeight;
+      c.width  = lw * dpr;
+      c.height = lh * dpr;
+      c.style.width  = lw + "px";
+      c.style.height = lh + "px";
+      const ctx = c.getContext("2d", { alpha: false });
+      if (ctx) ctx.scale(dpr, dpr);
+      sizeRef.current = { w: lw, h: lh };
+    };
+    resize();
+    window.addEventListener("resize", resize);
+    return () => window.removeEventListener("resize", resize);
   }, []);
 
-  useEffect(() => { rafRef.current=requestAnimationFrame(render); return ()=>cancelAnimationFrame(rafRef.current); }, [render]);
+  useEffect(() => {
+    lastTRef.current = performance.now();
+    rafRef.current = requestAnimationFrame(render);
+    return () => cancelAnimationFrame(rafRef.current);
+  }, [render]);
 
   useEffect(() => {
-    if (gameState==="playing") {
-      timerRef.current=setInterval(()=>{
+    if (gameState === "playing") {
+      timerRef.current = setInterval(() => {
         setTimeElapsed(t => {
           const next = t + 1;
           timeElapsedRef.current = next;
@@ -671,71 +790,82 @@ export default function Home() {
           return next;
         });
       }, 1000);
-    } else { if(timerRef.current) clearInterval(timerRef.current); }
-    return ()=>{ if(timerRef.current) clearInterval(timerRef.current); };
+    } else {
+      if (timerRef.current) clearInterval(timerRef.current);
+    }
+    return () => { if (timerRef.current) clearInterval(timerRef.current); };
   }, [gameState]);
 
-  const handleMouseMove = useCallback((e:React.MouseEvent<HTMLCanvasElement>)=>{
-    const rect=(e.target as HTMLCanvasElement).getBoundingClientRect();
-    const mx=e.clientX-rect.left, my=e.clientY-rect.top;
-    const hit=hitTest(mx,my), newHov=hit?hit.id:-1;
-    if (hoveredRef.current!==newHov) { hoveredRef.current=newHov; (e.target as HTMLCanvasElement).style.cursor=newHov>=0?"pointer":"default"; }
+  // Throttled mousemove (~60fps max, lower on mobile)
+  const handleMouseMove = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
+    const now = performance.now();
+    if (now - lastMoveRef.current < 16) return; // ~60fps cap
+    lastMoveRef.current = now;
+    const rect = (e.target as HTMLCanvasElement).getBoundingClientRect();
+    const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+    const hit = hitTest(mx, my), newHov = hit ? hit.id : -1;
+    if (hoveredRef.current !== newHov) {
+      hoveredRef.current = newHov;
+      (e.target as HTMLCanvasElement).style.cursor = newHov >= 0 ? "pointer" : "default";
+    }
   }, [hitTest]);
 
-  const foundItemTimerRef = useRef<ReturnType<typeof setTimeout>|null>(null);
+  // Touch support
+  const handleTouch = useCallback((e: React.TouchEvent<HTMLCanvasElement>) => {
+    if (gameStateRef.current !== "playing") return;
+    e.preventDefault();
+    const touch = e.changedTouches[0];
+    const rect = (e.target as HTMLCanvasElement).getBoundingClientRect();
+    const mx = touch.clientX - rect.left, my = touch.clientY - rect.top;
+    const hit = hitTest(mx, my); if (!hit) return;
+    // Synthesize click
+    hit.id; // just trigger a click-like handler below
+    handleClickCore(mx, my, hit);
+  }, [hitTest]);
 
-  const handleClick = useCallback((e:React.MouseEvent<HTMLCanvasElement>)=>{
-    if (gameStateRef.current!=="playing") return;
-    const rect=(e.target as HTMLCanvasElement).getBoundingClientRect();
-    const mx=e.clientX-rect.left, my=e.clientY-rect.top;
-    const hit=hitTest(mx,my); if (!hit) return;
-    const audio=getAudio();
+  const foundItemTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Extracted click core logic (shared by mouse + touch)
+  const handleClickCore = useCallback((mx: number, my: number, hit: Env) => {
+    const audio = getAudio();
 
     if (clickAudioRef.current) {
       clickAudioRef.current.currentTime = 0;
       clickAudioRef.current.play().catch(() => {});
     }
 
-    if ((hit.isReal || Math.random() < 0.01) && timeElapsed >= 300) {
-      hit.opened=true; gameStateRef.current="win"; setGameState("win"); setShowFlash(true);
+    if ((hit.isReal || Math.random() < 0.01) && timeElapsedRef.current >= 300) {
+      hit.opened = true;
+      gameStateRef.current = "win"; setGameState("win"); setShowFlash(true);
       setOpenedCount(c => {
         const next = c + 1;
-        setCumulativeStats(prev => {
-          const updated = { totalTime: prev.totalTime + timeElapsed, totalOpened: prev.totalOpened + next };
-          saveStats(updated);
-          return updated;
-        });
+        setCumulativeStats(prev => { const u = { ...prev, totalOpened: prev.totalOpened + 1 }; saveStats(u); return u; });
         return next;
       });
-      if(audio) playWin(audio);
-      setTimeout(()=>setShowFlash(false),2800);
+      if (audio) playWin(audio);
+      setTimeout(() => setShowFlash(false), 2800);
     } else if (hit.itemId) {
       const capturedItemId = hit.itemId;
-      const itemDef = ITEMS.find(i=>i.id===capturedItemId)!;
-
+      const itemDef = ITEMS.find(i => i.id === capturedItemId)!;
       hit.itemId = null;
       hit.shakeTimer = 620;
       hit.shakePhase = 0;
-      hit.isItemShake = true;       // shake ini bukan zonk
-      hit.itemOpenProgress = 0;     // mulai animasi dari awal
-      hit.itemEmoji = itemDef.emoji; // emoji yang akan keluar
-      hit.itemRarity = itemDef.rarity; // rarity untuk glow
+      hit.isItemShake = true;
+      hit.itemOpenProgress = 0;
+      hit.itemEmoji = itemDef.emoji;
+      hit.itemRarity = itemDef.rarity;
 
       setOpenedCount(c => {
         const next = c + 1;
-        setCumulativeStats(prev => {
-          const updated = { ...prev, totalOpened: prev.totalOpened + 1 };
-          saveStats(updated);
-          return updated;
-        });
+        setCumulativeStats(prev => { const u = { ...prev, totalOpened: prev.totalOpened + 1 }; saveStats(u); return u; });
         return next;
       });
 
       const newInv = loadInventory();
       const isNew = !newInv[itemDef.id];
-      newInv[itemDef.id] = (newInv[itemDef.id]||0)+1;
+      newInv[itemDef.id] = (newInv[itemDef.id] || 0) + 1;
       saveInventory(newInv);
-      setInventory({...newInv});
+      setInventory({ ...newInv });
       setSessionItemCount(c => c + 1);
       setHasOpenedInv(false);
 
@@ -746,7 +876,7 @@ export default function Home() {
       if (audio) playItem(audio, itemDef.rarity);
 
       spawnConfetti(hit.x, hit.y, itemDef.rarity,
-        itemDef.rarity === "legend" ? 50 : itemDef.rarity === "epic" ? 36 : itemDef.rarity === "langka" ? 24 : 16
+        itemDef.rarity === "legend" ? 40 : itemDef.rarity === "epic" ? 28 : itemDef.rarity === "langka" ? 20 : 14
       );
 
       if (foundItemTimerRef.current) clearTimeout(foundItemTimerRef.current);
@@ -754,34 +884,38 @@ export default function Home() {
       requestAnimationFrame(() => {
         setFoundItem(itemDef);
         setLastItemIsNew(isNew);
-        foundItemTimerRef.current = setTimeout(()=>setFoundItem(null), 3400);
+        foundItemTimerRef.current = setTimeout(() => setFoundItem(null), 3400);
       });
     } else {
-      // Zonk biasa: isItemShake tetap false
-      hit.shakeTimer=620; hit.shakePhase=0;
+      hit.shakeTimer = 620; hit.shakePhase = 0;
       setOpenedCount(c => {
         const next = c + 1;
-        setCumulativeStats(prev => {
-          const updated = { ...prev, totalOpened: prev.totalOpened + 1 };
-          saveStats(updated);
-          return updated;
-        });
+        setCumulativeStats(prev => { const u = { ...prev, totalOpened: prev.totalOpened + 1 }; saveStats(u); return u; });
         return next;
       });
-      if(audio) { playZonk(audio); playOpen(audio); }
-      setTimeout(()=>setZonkedCount(c=>c+1),650);
+      if (audio) { playZonk(audio); playOpen(audio); }
+      setTimeout(() => setZonkedCount(c => c + 1), 650);
     }
-  }, [hitTest, getAudio, spawnConfetti, timeElapsed]);
+  }, [getAudio, spawnConfetti]);
 
-  const formatTime=(s:number)=>{
-    const m=Math.floor(s/60).toString().padStart(2,"0"), sec=(s%60).toString().padStart(2,"0");
+  const handleClick = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (gameStateRef.current !== "playing") return;
+    const rect = (e.target as HTMLCanvasElement).getBoundingClientRect();
+    const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+    const hit = hitTest(mx, my); if (!hit) return;
+    handleClickCore(mx, my, hit);
+  }, [hitTest, handleClickCore]);
+
+  const formatTime = (s: number) => {
+    const m = Math.floor(s / 60).toString().padStart(2, "0");
+    const sec = (s % 60).toString().padStart(2, "0");
     return `${m}:${sec}`;
   };
 
   const totalCollected = Object.keys(inventory).length;
 
   return (
-    <div style={{width:"100vw",height:"100vh",overflow:"hidden",position:"relative",fontFamily:"'Georgia',serif", background:"#120600"}}>
+    <div style={{width:"100vw",height:"100vh",overflow:"hidden",position:"relative",fontFamily:"'Georgia',serif",background:"#120600"}}>
       <style>{`
         @keyframes flashPulse { 0%{opacity:0;transform:scale(0.3)} 25%{opacity:1;transform:scale(1)} 75%{opacity:1} 100%{opacity:0;transform:scale(2)} }
         @keyframes floatIn { from{opacity:0;transform:translateY(50px) scale(0.88)} to{opacity:1;transform:translateY(0) scale(1)} }
@@ -822,22 +956,27 @@ export default function Home() {
           .item-grid { grid-template-columns: repeat(auto-fill, minmax(90px, 1fr)) !important; }
           .saweria-btn { font-size: 11px !important; padding: 6px 12px !important; }
         }
+        /* Prevent iOS scroll bounce interfering with canvas touches */
+        canvas { touch-action: none; }
       `}</style>
 
-      {/* ── Background video overlay ── */}
-      {(gameState === "playing" || gameState === "win") && (
+      {/* ── Background video overlay (skip on low-end) ── */}
+      {(gameState === "playing" || gameState === "win") && !lowEndRef.current && (
         <video
           autoPlay loop muted playsInline
           style={{position:"fixed",inset:0,width:"100%",height:"100%",objectFit:"cover",
-            opacity:0.13,mixBlendMode:"screen",pointerEvents:"none",zIndex:1}}>
+            opacity:0.10,mixBlendMode:"screen",pointerEvents:"none",zIndex:1}}>
           <source src="/video.mp4" type="video/mp4" />
         </video>
       )}
 
       {/* ── Canvas ── */}
-      <canvas ref={canvasRef} style={{display:"block",position:"fixed",inset:0,zIndex:2}}
-        onMouseMove={gameState==="playing"?handleMouseMove:undefined}
-        onClick={gameState==="playing"?handleClick:undefined}
+      <canvas
+        ref={canvasRef}
+        style={{display:"block",position:"fixed",inset:0,zIndex:2}}
+        onMouseMove={gameState === "playing" ? handleMouseMove : undefined}
+        onClick={gameState === "playing" ? handleClick : undefined}
+        onTouchEnd={gameState === "playing" ? handleTouch : undefined}
       />
 
       {/* Win Flash */}
@@ -852,14 +991,14 @@ export default function Home() {
         <div className="item-popup" style={{
           position:"fixed",bottom:90,left:"50%",zIndex:80,pointerEvents:"none",
           animation:"itemPop 3.2s ease-out forwards",
-          background:`linear-gradient(135deg, #1a0a00, #2d1500)`,
+          background:"linear-gradient(135deg, #1a0a00, #2d1500)",
           border:`2px solid ${RARITY_COLOR[foundItem.rarity]}`,
           borderRadius:12,padding:"14px 24px",
           boxShadow:`0 0 24px ${RARITY_GLOW[foundItem.rarity]}, 0 8px 32px rgba(0,0,0,0.7)`,
           minWidth:240,textAlign:"center",
         }}>
           <div style={{fontSize:9,letterSpacing:"2px",textTransform:"uppercase",color:RARITY_COLOR[foundItem.rarity],marginBottom:4}}>
-            {lastItemIsNew?"✨ ITEM BARU! ✨":"Item Ditemukan"}
+            {lastItemIsNew ? "✨ ITEM BARU! ✨" : "Item Ditemukan"}
           </div>
           <div style={{fontSize:44,marginBottom:4}}>{foundItem.emoji}</div>
           <div style={{color:"#fdf3dc",fontWeight:800,fontSize:16,marginBottom:2}}>{foundItem.name}</div>
@@ -871,7 +1010,7 @@ export default function Home() {
       )}
 
       {/* ── Header ── */}
-      {(gameState==="playing"||gameState==="win") && (
+      {(gameState === "playing" || gameState === "win") && (
         <div className="header-container" style={{position:"fixed",top:0,left:0,right:0,zIndex:20,
           background:"linear-gradient(to bottom,rgba(8,2,0,0.95),transparent)",
           padding:"8px 20px",pointerEvents:"none"}}>
@@ -893,15 +1032,15 @@ export default function Home() {
               <span style={{fontSize:16,lineHeight:1}}>✉️</span>
               <span style={{color:"rgba(245,217,160,0.85)",fontSize:13,fontWeight:700}}>{openedCount}</span>
             </div>
-            <button onClick={()=>{ setShowInv(v=>!v); setHasOpenedInv(true); }} style={{
+            <button onClick={() => { setShowInv(v => !v); setHasOpenedInv(true); }} style={{
               position:"relative",background:"rgba(74,40,0,0.85)",
               border:"1px solid rgba(200,160,80,0.5)",borderRadius:6,padding:"5px 8px",
               color:"#f5d9a0",cursor:"pointer",fontSize:18,lineHeight:1,
               display:"flex",alignItems:"center",justifyContent:"center",transition:"filter 0.15s"}}
-              onMouseEnter={e=>e.currentTarget.style.filter="brightness(1.3)"}
-              onMouseLeave={e=>e.currentTarget.style.filter=""}>
+              onMouseEnter={e => e.currentTarget.style.filter = "brightness(1.3)"}
+              onMouseLeave={e => e.currentTarget.style.filter = ""}>
               🎒
-              {sessionItemCount > 0 && !hasOpenedInv &&(
+              {sessionItemCount > 0 && !hasOpenedInv && (
                 <span style={{position:"absolute",top:-6,right:-6,background:"#f59e0b",color:"#1a0800",
                   borderRadius:99,width:16,height:16,display:"flex",alignItems:"center",justifyContent:"center",
                   fontSize:9,fontWeight:900,animation:"invBadge 2s ease-in-out infinite"}}>{sessionItemCount}</span>
@@ -953,10 +1092,10 @@ export default function Home() {
       </div>
 
       {/* ── Inventory Modal ── */}
-      {showInv&&(
+      {showInv && (
         <div style={{position:"fixed",inset:0,zIndex:70,background:"rgba(4,1,0,0.88)",backdropFilter:"blur(8px)",
           display:"flex",alignItems:"center",justifyContent:"center"}}
-          onClick={e=>{if(e.target===e.currentTarget)setShowInv(false);}}>
+          onClick={e => { if (e.target === e.currentTarget) setShowInv(false); }}>
           <div className="inv-modal" style={{background:"linear-gradient(160deg,#1a0a00,#2d1400)",
             border:"2px solid #c8a050",borderRadius:12,padding:"28px 32px",maxWidth:640,width:"92%",
             maxHeight:"80vh",overflow:"auto",animation:"invSlideIn 0.3s ease-out",
@@ -966,12 +1105,12 @@ export default function Home() {
                 <h2 style={{color:"#f5d9a0",fontWeight:800,fontSize:22,margin:0}}>🎒 Inventori</h2>
                 <div style={{color:"#c8a050",fontSize:12,marginTop:2}}>{totalCollected}/{ITEMS.length} item ditemukan</div>
               </div>
-              <button onClick={()=>setShowInv(false)} style={{background:"rgba(255,255,255,0.08)",
+              <button onClick={() => setShowInv(false)} style={{background:"rgba(255,255,255,0.08)",
                 border:"1px solid rgba(200,160,80,0.3)",color:"#f5d9a0",borderRadius:6,
                 padding:"6px 14px",cursor:"pointer",fontSize:14}}>✕ Tutup</button>
             </div>
 
-            {(["legend","epic","langka","umum"] as Rarity[]).map(rarity=>(
+            {(["legend","epic","langka","umum"] as Rarity[]).map(rarity => (
               <div key={rarity} style={{marginBottom:20}}>
                 <div style={{color:RARITY_COLOR[rarity],fontSize:11,fontWeight:700,letterSpacing:"2px",
                   textTransform:"uppercase",marginBottom:10,display:"flex",alignItems:"center",gap:8}}>
@@ -980,19 +1119,20 @@ export default function Home() {
                   <div style={{height:1,flex:1,background:RARITY_COLOR[rarity],opacity:0.3}}/>
                 </div>
                 <div className="item-grid" style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(130px,1fr))",gap:10}}>
-                  {ITEMS.filter(i=>i.rarity===rarity).map(item=>{
-                    const count = inventory[item.id]||0;
-                    const owned = count>0;
+                  {ITEMS.filter(i => i.rarity === rarity).map(item => {
+                    const count = inventory[item.id] || 0;
+                    const owned = count > 0;
                     return (
                       <div key={item.id} style={{
-                        background:owned?`linear-gradient(135deg,rgba(30,15,0,0.9),rgba(50,25,0,0.9))`:"rgba(10,5,0,0.6)",
-                        border:owned?`1.5px solid ${RARITY_COLOR[rarity]}`:"1.5px solid rgba(100,60,20,0.3)",
+                        background: owned ? "linear-gradient(135deg,rgba(30,15,0,0.9),rgba(50,25,0,0.9))" : "rgba(10,5,0,0.6)",
+                        border: owned ? `1.5px solid ${RARITY_COLOR[rarity]}` : "1.5px solid rgba(100,60,20,0.3)",
                         borderRadius:10,padding:"14px 10px",textAlign:"center",position:"relative",
-                        animation:owned&&rarity==="legend"?"legendPulse 2s ease-in-out infinite":owned&&rarity==="epic"?"epicPulse 2.5s ease-in-out infinite":"none",
+                        animation: owned&&rarity==="legend" ? "legendPulse 2s ease-in-out infinite"
+                                 : owned&&rarity==="epic"   ? "epicPulse 2.5s ease-in-out infinite" : "none",
                         transition:"transform 0.15s"}}
-                        onMouseEnter={e=>{ if(owned)(e.currentTarget as HTMLDivElement).style.transform="translateY(-3px)"; }}
-                        onMouseLeave={e=>{ (e.currentTarget as HTMLDivElement).style.transform=""; }}>
-                        <div style={{fontSize:36,marginBottom:6,filter:owned?"none":"brightness(0)",opacity:owned?1:0.35,transition:"filter 0.3s"}}>{item.emoji}</div>
+                        onMouseEnter={e => { if (owned) (e.currentTarget as HTMLDivElement).style.transform = "translateY(-3px)"; }}
+                        onMouseLeave={e => { (e.currentTarget as HTMLDivElement).style.transform = ""; }}>
+                        <div style={{fontSize:36,marginBottom:6,filter:owned?"none":"brightness(0)",opacity:owned?1:0.35}}>{item.emoji}</div>
                         <div style={{color:owned?"#fdf3dc":"rgba(150,100,50,0.4)",fontWeight:700,fontSize:12,marginBottom:4,lineHeight:1.3}}>{owned?item.name:"???"}</div>
                         <div style={{display:"inline-block",padding:"2px 8px",borderRadius:99,
                           background:owned?RARITY_COLOR[rarity]:"rgba(80,40,0,0.4)",
@@ -1000,11 +1140,11 @@ export default function Home() {
                           fontSize:9,fontWeight:700,letterSpacing:"1px",marginBottom:owned&&count>1?4:0}}>
                           {RARITY_LABEL[rarity]}
                         </div>
-                        {owned&&count>1&&(
+                        {owned && count > 1 && (
                           <div style={{position:"absolute",top:6,right:8,background:RARITY_COLOR[rarity],color:"#fff",
                             borderRadius:99,padding:"1px 6px",fontSize:10,fontWeight:800}}>×{count}</div>
                         )}
-                        {owned&&(
+                        {owned && (
                           <div style={{color:"rgba(200,160,80,0.6)",fontSize:10,marginTop:4,fontStyle:"italic",lineHeight:1.4}}>
                             {item.description}
                           </div>
@@ -1020,15 +1160,15 @@ export default function Home() {
       )}
 
       {/* ── IDLE popup ── */}
-      {gameState==="idle"&&(
+      {gameState === "idle" && (
         <div style={{position:"fixed",inset:0,display:"flex",alignItems:"center",justifyContent:"center",
           zIndex:50,background:"rgba(8,2,0,0.92)",backdropFilter:"blur(10px)"}}>
           <div className="idle-popup" style={{background:"linear-gradient(160deg,#fdf3dc,#f5d9a0 60%,#e8c070)",borderRadius:"4px",
             padding:"44px 52px",maxWidth:480,width:"90%",textAlign:"center",animation:"floatIn 0.5s ease-out",
             boxShadow:"0 40px 100px rgba(0,0,0,0.85),inset 0 1px 0 rgba(255,255,255,0.5)",
             border:"2px solid #c8a050",position:"relative"}}>
-            {[["top:10px","left:10px"],["top:10px","right:10px"],["bottom:10px","left:10px"],["bottom:10px","right:10px"]].map((pos,i)=>(
-              <div key={i} style={{position:"absolute",...Object.fromEntries(pos.map(p=>p.split(":"))),width:20,height:20,border:"2px solid #c8a050",borderRadius:"2px"}}/>
+            {[["top:10px","left:10px"],["top:10px","right:10px"],["bottom:10px","left:10px"],["bottom:10px","right:10px"]].map((pos,i) => (
+              <div key={i} style={{position:"absolute",...Object.fromEntries(pos.map(p => p.split(":"))),width:20,height:20,border:"2px solid #c8a050",borderRadius:"2px"}}/>
             ))}
             <div style={{fontSize:52,marginBottom:8}}>📂</div>
             <h1 className="idle-title" style={{fontSize:26,fontWeight:800,color:"#3d1a00",letterSpacing:"-0.5px",lineHeight:1.2,marginBottom:10}}>
@@ -1045,12 +1185,12 @@ export default function Home() {
               <span style={{color:RARITY_COLOR.epic}}>■ Epic</span>{" · "}
               <span style={{color:RARITY_COLOR.legend}}>■ Legendaris</span>
             </div>
-            {(totalCollected>0 || cumulativeStats.totalOpened>0)&&(
+            {(totalCollected > 0 || cumulativeStats.totalOpened > 0) && (
               <div className="stats-row" style={{background:"rgba(60,20,0,0.08)",borderRadius:8,padding:"10px 16px",marginBottom:16,
                 display:"flex",gap:16,justifyContent:"center",fontSize:12,color:"#7a4010"}}>
-                {cumulativeStats.totalOpened>0&&(<span>✉️ <strong>{cumulativeStats.totalOpened.toLocaleString()}</strong> amplop dibuka</span>)}
-                {cumulativeStats.totalTime>0&&(<span>⏱ <strong>{formatTime(cumulativeStats.totalTime)}</strong> total bermain</span>)}
-                {totalCollected>0&&(<span>🎒 <strong>{totalCollected}/{ITEMS.length}</strong> item</span>)}
+                {cumulativeStats.totalOpened > 0 && (<span>✉️ <strong>{cumulativeStats.totalOpened.toLocaleString()}</strong> amplop dibuka</span>)}
+                {cumulativeStats.totalTime > 0 && (<span>⏱ <strong>{formatTime(cumulativeStats.totalTime)}</strong> total bermain</span>)}
+                {totalCollected > 0 && (<span>🎒 <strong>{totalCollected}/{ITEMS.length}</strong> item</span>)}
               </div>
             )}
             <div style={{display:"flex",gap:10,justifyContent:"center"}}>
@@ -1060,15 +1200,15 @@ export default function Home() {
                 letterSpacing:"2.5px",textTransform:"uppercase",
                 boxShadow:"0 8px 24px rgba(180,100,10,0.55),inset 0 1px 0 rgba(255,255,255,0.2)",
                 transition:"transform 0.15s"}}
-                onMouseEnter={e=>e.currentTarget.style.transform="translateY(-3px)"}
-                onMouseLeave={e=>e.currentTarget.style.transform=""}>▶ Mulai</button>
+                onMouseEnter={e => e.currentTarget.style.transform = "translateY(-3px)"}
+                onMouseLeave={e => e.currentTarget.style.transform = ""}>▶ Mulai</button>
             </div>
           </div>
         </div>
       )}
 
       {/* ── WIN popup ── */}
-      {gameState==="win"&&!showFlash&&(
+      {gameState === "win" && !showFlash && (
         <div style={{position:"fixed",inset:0,display:"flex",alignItems:"center",justifyContent:"center",
           zIndex:60,background:"radial-gradient(ellipse at center,rgba(255,220,50,0.1),rgba(8,2,0,0.94) 65%)",
           backdropFilter:"blur(6px)"}}>
@@ -1077,7 +1217,7 @@ export default function Home() {
             textAlign:"center",animation:"floatIn 0.4s ease-out",
             boxShadow:"0 0 80px rgba(255,200,0,0.3),0 40px 100px rgba(0,0,0,0.85)",
             border:"2px solid #f0b030",position:"relative",maxHeight:"90vh",overflow:"auto"}}>
-            {[...Array(12)].map((_,i)=>(
+            {[...Array(12)].map((_,i) => (
               <div key={i} style={{position:"absolute",fontSize:18,
                 top:`${8+Math.random()*84}%`,left:`${4+Math.random()*92}%`,
                 animation:`sparkle 1.8s ${i*0.15}s ease-in-out infinite`,pointerEvents:"none"}}>✨</div>
@@ -1095,7 +1235,7 @@ export default function Home() {
               ZONK: <strong style={{color:"#c0392b"}}>{zonkedCount}</strong> · Dibuka: <strong>{openedCount}</strong>
               · Item: <strong>{totalCollected}/{ITEMS.length}</strong>
             </p>
-            <button onClick={()=>setShowInv(true)} style={{
+            <button onClick={() => setShowInv(true)} style={{
               background:"linear-gradient(135deg,#3a1f00,#2d1500)",color:"#f5d9a0",
               border:"1.5px solid #c8a050",padding:"8px 18px",fontSize:13,
               fontWeight:700,borderRadius:"3px",cursor:"pointer",marginBottom:16}}>
@@ -1109,7 +1249,7 @@ export default function Home() {
                   {label:"Telegram",emoji:"✈️",bg:"#229ED9",url:()=>`https://t.me/share/url?url=${encodeURIComponent(window.location.href)}&text=${encodeURIComponent(`🎯 Ayo Bermain Cari Ijazah Asli Jokowi! Aku selesai dalam ${formatTime(timeElapsed)}!`)}`},
                   {label:"X",emoji:"🐦",bg:"#000",url:()=>`https://twitter.com/intent/tweet?text=${encodeURIComponent(`🎯 Ayo Bermain Cari ijazah Asli Jokowi! ${formatTime(timeElapsed)} · ${zonkedCount} ZONK 👉 ${window.location.href}`)}`},
                   {label:"Facebook",emoji:"📘",bg:"#1877F2",url:()=>`https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent(window.location.href)}`},
-                ].map(s=>(
+                ].map(s => (
                   <a key={s.label} href={s.url()} target="_blank" rel="noopener noreferrer"
                     style={{display:"inline-flex",alignItems:"center",gap:4,background:s.bg,color:"#fff",
                       padding:"7px 12px",borderRadius:"3px",fontSize:12,fontWeight:700,textDecoration:"none",
