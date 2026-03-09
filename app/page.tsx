@@ -159,7 +159,7 @@ interface Env {
 }
 
 // ─── Game constants ───────────────────────────────────────────────────────────
-const TOTAL = 100;
+const TOTAL = 50;
 const ROWS  = 5;
 const W = 90;
 const H = 66;
