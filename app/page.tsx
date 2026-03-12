@@ -31,6 +31,20 @@ const ITEMS: ItemDef[] = [
   { id: "kuda",      name: "Kuda",                emoji: "🐎", rarity: "epic",   dropWeight: 2,  description: "Kuda gagah berlari kencang di padang savana." },
   { id: "wayang",    name: "Dokumen Super Semar", emoji: "📜", rarity: "legend", dropWeight: 1,  description: "Manuskrip kuno berisikan perjanjian dewata, sangat langka!" },
   { id: "tembok",    name: "Tembok Ratapan",      emoji: "🧱", rarity: "legend", dropWeight: 1,  description: "Tembok keramat penuh doa dan air mata." },
+  { id: "viral_0", name: "Odading Mang Oleh", emoji: "🍞", rarity: "umum", dropWeight: 15, description: "Rasanya seperti menjadi Iron Man." },
+  { id: "viral_1", name: "Es Teh Solo", emoji: "🥤", rarity: "umum", dropWeight: 14, description: "Es teh tumpah ruah rasa khas Solo." },
+  { id: "viral_2", name: "Seblak Prasmanan", emoji: "🥣", rarity: "umum", dropWeight: 13, description: "Seblak njerit pedas mampus." },
+  { id: "viral_3", name: "Ayam Geprek Bensin", emoji: "🍗", rarity: "umum", dropWeight: 12, description: "Ayam geprek dibakar api." },
+  { id: "viral_4", name: "Kopi Kenangan", emoji: "☕", rarity: "umum", dropWeight: 11, description: "Kopi mantan manis tapi nyakitin." },
+  { id: "viral_5", name: "Nasi Padang Karet Dua", emoji: "🍛", rarity: "umum", dropWeight: 10, description: "Dibungkus, porsi kuli." },
+  { id: "viral_6", name: "Indomie Telur Kornet", emoji: "🍜", rarity: "umum", dropWeight: 9, description: "Makanan perbaikan gizi anak kos." },
+  { id: "viral_7", name: "Mixue Ice Cream", emoji: "🍦", rarity: "umum", dropWeight: 8, description: "Muncul di mana-mana di ruko kosong." },
+  { id: "viral_8", name: "Basreng Pedas", emoji: "🍘", rarity: "umum", dropWeight: 7, description: "Cemilan micin yang bikin nagih." },
+  { id: "viral_9", name: "Cilor", emoji: "🍢", rarity: "umum", dropWeight: 6, description: "Aci telor jajanan SD ter the best." },
+  { id: "viral_10", name: "Makaroni Ngehe", emoji: "🍝", rarity: "umum", dropWeight: 15, description: "Makaroni pedas gila." },
+  { id: "viral_11", name: "Kue Pancong Lumer", emoji: "🥞", rarity: "umum", dropWeight: 14, description: "Kue pancong setengah matang." },
+  { id: "viral_12", name: "Tahu Bulat", emoji: "🍘", rarity: "umum", dropWeight: 13, description: "Digoreng dadakan 500an." },
+  { id: "viral_13", name: "Gorengan Mendoan", emoji: "🥟", rarity: "umum", dropWeight: 12, description: "Tempe tipis digoreng tepung." },
 ];
 
 const TOTAL_WEIGHT = ITEMS.reduce((s, i) => s + i.dropWeight, 0);
@@ -1051,6 +1065,7 @@ export default function Home() {
         @keyframes epicPulse { 0%,100%{box-shadow:0 0 0 0 rgba(168,85,247,0.5)} 50%{box-shadow:0 0 0 5px rgba(168,85,247,0)} }
         @keyframes invBadge { 0%,100%{transform:scale(1)} 50%{transform:scale(1.3)} }
         @keyframes marqueeScroll { 0%{transform:translateX(0)} 100%{transform:translateX(-50%)} }
+        @keyframes donationPulse { 0%,100%{transform:scale(1);box-shadow:0 2px 10px rgba(245,158,11,0.4)} 50%{transform:scale(1.08);box-shadow:0 4px 20px rgba(245,158,11,0.7)} }
 
         .header-container { display: grid !important; grid-template-columns: 1fr auto 1fr; align-items: center; }
         .header-title-wrapper { justify-self: start; }
@@ -1072,12 +1087,31 @@ export default function Home() {
           .item-grid { grid-template-columns: repeat(auto-fill, minmax(105px, 1fr)) !important; gap: 8px !important; }
           .saweria-btn { padding: 8px 16px !important; font-size: 13px !important; }
           .item-popup { transform: translateX(-50%) scale(0.85) !important; bottom: 70px !important; }
-          .footer-saweria { height: 60px !important; }
+          .footer-saweria { height: auto !important; min-height: 80px !important; padding: 12px 10px !important; gap: 10px !important; }
+          .donation-btn { font-size: 9px !important; padding: 10px 14px !important; width: 90%; max-width: 300px; line-height: 1.4; }
         }
         @media (max-width: 380px) {
           .item-grid { grid-template-columns: repeat(auto-fill, minmax(90px, 1fr)) !important; }
           .saweria-btn { font-size: 11px !important; padding: 6px 12px !important; }
+          .donation-btn { font-size: 8px !important; }
         }
+        .donation-btn {
+          background: linear-gradient(135deg, #f59e0b, #d97706);
+          color: #1a0800;
+          padding: 6px 16px;
+          border-radius: 4px;
+          font-size: 10px;
+          font-weight: 800;
+          text-decoration: none;
+          letter-spacing: 0.5px;
+          text-transform: uppercase;
+          box-shadow: 0 2px 10px rgba(245, 158, 11, 0.4);
+          transition: transform 0.15s, filter 0.15s;
+          display: inline-block;
+          animation: donationPulse 2s ease-in-out infinite;
+          text-align: center;
+        }
+        .donation-btn:hover { transform: scale(1.05); filter: brightness(1.1); }
         /* Prevent iOS scroll bounce interfering with canvas touches */
         canvas { touch-action: none; }
       `}</style>
@@ -1224,10 +1258,10 @@ export default function Home() {
           </div>
         </div>
 
-        <div className="footer-saweria" style={{height:70,
+        <div className="footer-saweria" style={{minHeight:70,
           background:"linear-gradient(90deg,#1a0800,#2d1000,#1a0800)",
           borderTop:"1px solid rgba(200,160,80,0.12)",
-          display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:4}}>
+          display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:4,padding:"10px 0"}}>
           <a href="https://saweria.co/aryatim" target="_blank" rel="noopener noreferrer" className="saweria-btn"
             style={{display:"inline-flex",alignItems:"center",gap:8,
               background:"linear-gradient(135deg,#f97316,#c2410c)",color:"#fff",textDecoration:"none",
@@ -1236,7 +1270,9 @@ export default function Home() {
             onMouseEnter={e=>{e.currentTarget.style.animationPlayState="paused";e.currentTarget.style.filter="brightness(1.18)";e.currentTarget.style.transform="scale(1.08)";}}
             onMouseLeave={e=>{e.currentTarget.style.animationPlayState="running";e.currentTarget.style.filter="";e.currentTarget.style.transform="";}}
           >☕ Jangan Lupa Support di Saweria YA!</a>
-          <div style={{color:"rgba(245,217,160,0.9)",fontSize:10,fontWeight:700,letterSpacing:"1px",textTransform:"uppercase"}}>100% DANA AKAN DI DONASIKAN KE PANTI ASUHAN</div>
+          <a href="https://files.catbox.moe/gjhtn8.pdf" target="_blank" rel="noopener noreferrer" className="donation-btn">
+            Donasi sudah disalurkan, klik untuk melihat detail penyaluran
+          </a>
         </div>
       </div>
 
@@ -1254,7 +1290,7 @@ export default function Home() {
                 <h2 style={{color:"#f5d9a0",fontWeight:800,fontSize:22,margin:0}}>🎒 Inventori</h2>
                 <div style={{color:"#c8a050",fontSize:12,marginTop:2}}>{totalCollected}/{ITEMS.length} item ditemukan</div>
                 {cumulativeStats.bonusChance !== undefined && (
-                  <div style={{color:"#fbbf24",fontSize:12,marginTop:2,fontWeight:700}}>Peluang: {((0.000001 + cumulativeStats.bonusChance) * 100).toFixed(4)}%</div>
+                  <div style={{color:"#fbbf24",fontSize:12,marginTop:2,fontWeight:700}}>Bonus Keberuntungan: {((0.000001 + cumulativeStats.bonusChance) * 100).toFixed(4)}%</div>
                 )}
               </div>
               <button onClick={() => setShowInv(false)} style={{background:"rgba(255,255,255,0.08)",
